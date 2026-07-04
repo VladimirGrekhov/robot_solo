@@ -65,7 +65,7 @@ class App(tk.Tk):
 
         self.title("pattern_robot — живой режим")
         self.configure(bg=BG)
-        self.geometry("800x600")
+        self.geometry(cfg.get("window_geometry", "800x600"))
         self.minsize(680, 480)
 
         self._build_header()
@@ -252,6 +252,7 @@ class App(tk.Tk):
             new_vals[key] = val
         # 2) записать в конфиг атомарно
         self.cfg.setdefault("reversal_3plus1", {}).update(new_vals)
+        self.cfg["window_geometry"] = self.geometry()
         try:
             P.save_config(self.cfg)
         except Exception as e:  # noqa: BLE001
