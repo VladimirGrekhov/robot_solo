@@ -134,6 +134,11 @@ def _detect(trend, rev, cfg, step, min_body, min_trend, min_rev, side):
     if min_trend > 0 and trend_move < min_trend:
         return None
 
+    # тело 3-й свечи тренда меньше 1-й и 2-й
+    body3 = _body(trend[2])
+    if not (_body(trend[0]) > body3 and _body(trend[1]) > body3):
+        return None
+
     # разворотная свеча: противоположный цвет (с учётом min_body) + фильтр размаха
     rev_ok = _is_bull(rev, min_body) if bull else _is_bear(rev, min_body)
     if cfg.get("c4_opposite_color", True) and not rev_ok:
@@ -153,9 +158,14 @@ def _detect(trend, rev, cfg, step, min_body, min_trend, min_rev, side):
     retrace = float(cfg.get("entry_retrace", 0.5))
     entry = (hi - retrace * (hi - lo)) if bull else (lo + retrace * (hi - lo))
 
-    # стоп / риск / цель
+    # стоп / риск / цель — стоп за экстремумом всех 4 свечей
     off = float(cfg.get("stop_offset_ticks", 1)) * step
-    stop = (_f(rev, "low") - off) if bull else (_f(rev, "high") + off)
+    if bull:
+        all_lows = [_f(c, "low") for c in trend] + [_f(rev, "low")]
+        stop = min(all_lows) - off
+    else:
+        all_highs = [_f(c, "high") for c in trend] + [_f(rev, "high")]
+        stop = max(all_highs) + off
     risk = (entry - stop) if bull else (stop - entry)
     if risk <= 0:
         return None
