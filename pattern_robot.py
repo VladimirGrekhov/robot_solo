@@ -56,6 +56,11 @@ def setup_logging(cfg: dict):
     for h in (logging.StreamHandler(), logging.FileHandler(log_dir / "pattern_robot.log", encoding="utf-8")):
         h.setFormatter(fmt)
         log.addHandler(h)
+    # настраиваем логгер chart чтобы его сообщения тоже попадали в тот же файл
+    chart_log = logging.getLogger("chart")
+    chart_log.setLevel(logging.INFO)
+    for h in log.handlers:
+        chart_log.addHandler(h)
 
 
 def execute_signal(cfg: dict, instr: dict, sig, candle, source: str):

@@ -9,10 +9,16 @@ chart.py — рисование стрелок и уровней на графи
 Свечи и метки привязаны к КОНКРЕТНОМУ графику по его тегу (chart_tag).
 """
 
+import logging
 import os
 from pathlib import Path
 
+_log = logging.getLogger("chart")
+
 HERE = Path(__file__).resolve().parent
+
+# Хранилище ID меток по тегу графика (чтобы удалять по одной, т.к. DelAllLabels не работает)
+_label_ids: dict[str, list] = {}
 
 
 def cv_date_time(candle: dict) -> tuple[int, int]:
@@ -43,7 +49,16 @@ def _add_label(qp, tag, y_value, date_num, time_num, text="", image_path="",
         str(r), str(g), str(b), str(transparency), str(trans_bg),
         font_name, str(font_height),
     ])
-    return qp.process_request({"data": data, "id": 0, "cmd": "addLabel2", "t": ""})
+    result = qp.process_request({"data": data, "id": 0, "cmd": "addLabel2", "t": ""})
+    label_id = (result or {}).get("data")
+    if label_id is not None:
+        try:
+            label_id = int(label_id)
+        except (TypeError, ValueError):
+            label_id = None
+    if label_id is not None and label_id != 0:
+        _label_ids.setdefault(tag, []).append(label_id)
+    return result
 
 
 def _image_for(cfg_arrows: dict, key: str) -> str:
@@ -56,9 +71,10 @@ def _image_for(cfg_arrows: dict, key: str) -> str:
 
 def del_all_labels(qp, tag: str):
     try:
-        qp.del_all_labels(tag)
-    except Exception:
-        pass  # нет меток / нет графика — не валимся
+        result = qp.process_request({"data": tag, "id": 0, "cmd": "delAllLabels", "t": ""})
+        _log.info("del_all_labels(tag=%s) -> %s", tag, result)
+    except Exception as e:
+        _log.warning("del_all_labels(tag=%s) failed: %r", tag, e)
 
 
 def draw_arrow(qp, tag: str, cfg_arrows: dict, candle: dict, is_bull: bool,

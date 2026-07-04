@@ -26,7 +26,7 @@
     ],
     "reversal_3plus1": {
         "trend_candles": 3,
-        "trend_strict_monotonic": false,
+        "trend_strict_monotonic": true,
         "c4_opposite_color": true,
         "breakout_ref": "open",
         "breakout_confirm": "close",
