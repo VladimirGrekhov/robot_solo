@@ -101,15 +101,26 @@ def draw_arrow(qp, tag: str, cfg_arrows: dict, candle: dict, is_bull: bool,
                font_name="Arial", font_height=12)
 
 
-def draw_levels(qp, tag: str, candle: dict, entry: float, stop: float, tp: float):
-    """Горизонтальные подписи вход/стоп/тейк цветом."""
+def draw_levels(qp, tag: str, candle: dict, entry: float, stop: float, tp: float,
+                rub_per_point=None, side=None):
+    """Горизонтальные подписи вход/стоп/тейк цветом. Если rub_per_point задан — добавляем P&L."""
     dn, tn = cv_date_time(candle)
     line = "-" * 40
+    if rub_per_point and side:
+        long = side == "long"
+        sl_pnl = -(entry - stop) * rub_per_point if long else -(stop - entry) * rub_per_point
+        tp_pnl = (tp - entry) * rub_per_point if long else (entry - tp) * rub_per_point
+    else:
+        sl_pnl = tp_pnl = None
     for yval, lbl, r, g, b in [
         (entry, f"{line} ВХОД {entry:.2f}", 255, 255, 0),
         (stop,  f"{line} СТОП {stop:.2f}",  255, 0, 0),
         (tp,    f"{line} ТП   {tp:.2f}",    0, 200, 0),
     ]:
+        if sl_pnl is not None:
+            pnl = 0 if yval == entry else (sl_pnl if yval == stop else tp_pnl)
+            sign = "+" if pnl > 0 else ""
+            lbl += f" ({sign}{pnl:.0f} руб)"
         _add_label(qp, tag, yval, dn, tn, text=lbl, alignment="RIGHT", hint=lbl,
                    r=r, g=g, b=b, transparency=0, trans_bg=1,
                    font_name="Courier New", font_height=10)

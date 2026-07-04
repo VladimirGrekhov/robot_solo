@@ -97,6 +97,9 @@ def scan_instrument(qp, cfg: dict, instr: dict):
         log.error("[%s] загрузить свечи не удалось (получено %d).", name, len(candles))
         return
 
+    sec = instr.get("ticker") or _safe_ticker(qp, cfg["class_code"], instr)
+    rpp = _rub_per_point(qp, cfg["class_code"], sec, instr)
+
     found = 0
     outcomes = []
     for i in range(4, len(candles) + 1):
@@ -108,13 +111,14 @@ def scan_instrument(qp, cfg: dict, instr: dict):
         found += 1
         is_bull = sig.side == "long"
         note = (" | " + "; ".join(sig.notes)) if sig.notes else ""
-        log.info("[%s] СКАН сигнал #%d: %s · бар %s · вход=%.2f стоп=%.2f тейк=%.2f риск=%.0f п. · ОИ=н/д (история)%s",
+        rpp_str = f" ({sig.risk * rpp:.0f} руб)" if rpp else ""
+        log.info("[%s] СКАН сигнал #%d: %s · бар %s · вход=%.2f стоп=%.2f тейк=%.2f риск=%.0f п.%s · ОИ=н/д (история)%s",
                  name, found, sig.side.upper(), chart.fmt_dt(cv4),
-                 sig.entry, sig.stop, sig.target, sig.risk, note)
+                 sig.entry, sig.stop, sig.target, sig.risk, rpp_str, note)
         try:
             hint = f"3+1 {sig.side} Вход={sig.entry:.2f} СЛ={sig.stop:.2f} ТП={sig.target:.2f}"
             chart.draw_arrow(qp, tag, arrows, cv4, is_bull, found, hint)
-            chart.draw_levels(qp, tag, cv4, sig.entry, sig.stop, sig.target)
+            chart.draw_levels(qp, tag, cv4, sig.entry, sig.stop, sig.target, rpp, sig.side)
             log.info("[%s]   стрелка нарисована на баре %s", name, chart.fmt_dt(cv4))
         except Exception as e:  # noqa: BLE001
             log.warning("[%s]   стрелку нарисовать не удалось: %r", name, e)
@@ -123,8 +127,6 @@ def scan_instrument(qp, cfg: dict, instr: dict):
     log.info("[%s] скан завершён: сигналов %d на %d свечах.", name, found, len(candles))
     s = summarize(outcomes)
     if s["total"]:
-        sec = instr.get("ticker") or _safe_ticker(qp, cfg["class_code"], instr)
-        rpp = _rub_per_point(qp, cfg["class_code"], sec, instr)
         period = period_stats(_bar_dt(candles[0]), _bar_dt(candles[-1]), s["target"] + s["stop"])
         for line in summary_report(outcomes, rub_per_point=rpp, period=period):
             log.info("[%s] %s", name, line)
@@ -383,15 +385,17 @@ def _emit_signal(qp, cfg, st, sig, candle, source, oi_str, on_event=None):
     num = st["found"]
     note = (" | " + "; ".join(sig.notes)) if sig.notes else ""
     drawn = "да"
+    rpp = st.get("rpp")
     try:
         hint = f"3+1 {sig.side} Вход={sig.entry:.2f} СЛ={sig.stop:.2f} ТП={sig.target:.2f}"
         chart.draw_arrow(qp, tag, cfg["arrows"], candle, sig.side == "long", num, hint)
-        chart.draw_levels(qp, tag, candle, sig.entry, sig.stop, sig.target)
+        chart.draw_levels(qp, tag, candle, sig.entry, sig.stop, sig.target, rpp, sig.side)
     except Exception as e:  # noqa: BLE001
         drawn = f"нет ({e!r})"
-    log.info("[%s] %s #%d: %s · бар %s · вход=%.2f стоп=%.2f тейк=%.2f риск=%.0f п. · %s · стрелка=%s · режим=%s%s",
+    rpp_str = f" ({sig.risk * rpp:.0f} руб)" if rpp else ""
+    log.info("[%s] %s #%d: %s · бар %s · вход=%.2f стоп=%.2f тейк=%.2f риск=%.0f п.%s · %s · стрелка=%s · режим=%s%s",
              name, source.upper(), num, sig.side.upper(), chart.fmt_dt(candle),
-             sig.entry, sig.stop, sig.target, sig.risk, oi_str, drawn, cfg.get("mode"), note)
+             sig.entry, sig.stop, sig.target, sig.risk, rpp_str, oi_str, drawn, cfg.get("mode"), note)
     execute_signal(cfg, instr, sig, candle, source)
     if on_event:
         on_event("signal", {"instrument": name, "source": source, "num": num,
@@ -520,9 +524,10 @@ def run_live(cfg, qp=None, max_iterations=None, now_fn=None, sleep_fn=None,
 
     # начальный проход: разметить историю и встать на последний закрытый бар
     for st in state.values():
+        st["rpp"] = _rub_per_point(qp, cls, st["sec"], st["instr"])
         chart.del_all_labels(qp, st["instr"].get("chart_tag", ""))
         _process_bars(qp, cfg, st, initial=True, on_event=on_event)
-        rpp = _rub_per_point(qp, cls, st["sec"], st["instr"])
+        rpp = st["rpp"]
         go = _read_go(qp, cls, st["sec"])
         lots = int(cfg.get("volume_lots", 1))
         s = summarize(st["outcomes"], rub_per_point=rpp)

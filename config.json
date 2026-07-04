@@ -34,7 +34,7 @@
         "entry_retrace": 0.5,
         "stop_basis": "c4_extreme",
         "stop_offset_ticks": 1,
-        "rr_ratio": 3.0,
+        "rr_ratio": 2.0,
         "order_ttl_candles": 4,
         "min_body_ticks": 3,
         "min_trend_range_ticks": 3,
