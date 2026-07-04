@@ -50,5 +50,6 @@
         "bear_image": "arow24_green.png",
         "min_len": 0
     },
-    "log_dir": "logs"
+    "log_dir": "logs",
+    "window_geometry": "802x709+52+52"
 }
