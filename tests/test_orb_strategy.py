@@ -115,6 +115,33 @@ def test_position_never_flips_while_open():
     assert r.state.position.side == "long"
 
 
+def test_allow_flip_reverses_position_on_opposite_breakout():
+    # тот же сценарий, что и test_position_never_flips_while_open, но с allow_flip=True —
+    # поведение эталонного Pine-скрипта (strategy.entry реверсирует позицию)
+    st = build_range(rh=105.0, rl=50.0)
+    r = s.process_bar(st, bar(11, 0, 106, 108, 105, 107), False, False, 600, allow_flip=True)
+    st = s.open_position(r.state, r.entry, entry_price=107)
+    assert st.position.side == "long"
+
+    # low=51 (>stop=50, стоп НЕ задет), close=45 (<range_low=50 — свежий пробой вниз)
+    r = s.process_bar(st, bar(11, 15, 55, 56, 51, 45), False, False, 600, allow_flip=True)
+    assert r.exit is not None
+    assert r.exit.reason == "flip"
+    assert r.entry is not None
+    assert r.entry.side == "short"
+    st = r.state
+    assert st.position is None          # закрыт этим же BarResult, откроется на след. баре
+    assert st.short_used is True        # шорт считается использованным на сегодня
+
+    # стоп шорта (105 = range_high) всегда совпадает с порогом для флипа обратно в лонг —
+    # стоп-проверка идёт раньше проверки флипа, поэтому она и сработает первой
+    st = s.open_position(st, r.entry, entry_price=45)
+    r = s.process_bar(st, bar(11, 30, 100, 106, 99, 104), False, False, 600, allow_flip=True)
+    assert r.exit is not None
+    assert r.exit.reason == "stop"
+    assert r.entry is None  # не флип — именно стоп, повторный лонг всё равно не использован бы
+
+
 def test_cbr_hard_block_forces_flat_and_blocks_new_entries():
     st = build_range()
     r = s.process_bar(st, bar(11, 0, 106, 108, 105, 107), False, False, 600)

@@ -60,3 +60,16 @@ def test_force_flat_gate_only_cbr_hot():
     assert oc.force_flat_gate(datetime(2026, 2, 13, 13, 15)) is True
     assert oc.force_flat_gate(datetime(2026, 1, 14, 19, 0)) is False  # CPI — не жёсткий блок
     assert oc.force_flat_gate(datetime(2026, 1, 15, 14, 2)) is False  # клиринг — не жёсткий блок
+
+
+def test_expiration_zone_mode_trading_days_vs_calendar_days():
+    # экспирация 19.03.2026 — четверг; +2 торговых дня перепрыгивает выходные до понедельника 23.03
+    monday_after = datetime(2026, 3, 23, 12, 0)
+    assert oc.entry_gate(monday_after, "trading_days") == (True, "blocked_expiration_adj")
+    # в календарных днях |23-19|=4 > 2 — уже вне зоны, как в эталонном Pine-скрипте
+    assert oc.entry_gate(monday_after, "calendar_days") == (False, None)
+
+    # обе зоны совпадают в пределах +/-2 календарных/торговых дней без выходных (вторник 17.03)
+    tuesday_before = datetime(2026, 3, 17, 12, 0)
+    assert oc.entry_gate(tuesday_before, "trading_days")[0] is True
+    assert oc.entry_gate(tuesday_before, "calendar_days")[0] is True

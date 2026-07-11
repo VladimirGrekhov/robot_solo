@@ -30,7 +30,7 @@ class TradeRecord:
     stop: float
     pnl_pt: float
     pnl_rub: float
-    exit_reason: str       # "stop" | "eod" | "cbr_flat" | "kill"
+    exit_reason: str       # "stop" | "eod" | "cbr_flat" | "kill" | "flip"
     range_width_pt: float
     event_flags: str = ""  # человекочитаемый список сработавших календарных флагов
 

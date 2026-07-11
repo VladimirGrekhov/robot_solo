@@ -95,12 +95,16 @@ def _fresh_day(day: date) -> OrbState:
 
 
 def process_bar(state: OrbState, bar: Bar, blocked_entry: bool, force_flat: bool,
-                 max_stop_pt: float) -> BarResult:
+                 max_stop_pt: float, allow_flip: bool = False) -> BarResult:
     """Обрабатывает один закрытый бар M15 и возвращает новое состояние + события.
 
     blocked_entry — вход запрещён календарём (ЦБ/CPI/клиринг/зона экспирации);
     force_flat    — открытая позиция должна быть немедленно закрыта (день ЦБ 13:00-15:30);
-    max_stop_pt   — максимально допустимая ширина диапазона в пунктах.
+    max_stop_pt   — максимально допустимая ширина диапазона в пунктах;
+    allow_flip    — разрешить разворот позиции противоположным свежим пробоем без
+                    ожидания стопа/EOD (поведение эталонного Pine-скрипта). По
+                    умолчанию False — противоположный сигнал при открытой позиции
+                    игнорируется (исходная спецификация ORB: «позиция всегда одна»).
 
     Позиция за смену дня НЕ переносится (робот дневной, закрывается в 18:40) —
     если на новый день пришёл незакрытый Position, это ошибка вызывающего кода,
@@ -139,15 +143,32 @@ def process_bar(state: OrbState, bar: Bar, blocked_entry: bool, force_flat: bool
         pos = state.position
         hit_stop = (bar.low <= pos.stop_price) if pos.side == "long" else (bar.high >= pos.stop_price)
         exit_sig = None
+        flip_entry = None
         if hit_stop:
             exit_sig = ExitSignal("stop", pos.stop_price)
         elif force_flat:
             exit_sig = ExitSignal("cbr_flat", bar.open)
         elif t >= ENTRY_END:
             exit_sig = ExitSignal("eod", bar.open)
+        elif allow_flip and ENTRY_START <= t < ENTRY_END:
+            # переворот позиции противоположным свежим пробоем — поведение
+            # эталонного Pine-скрипта (strategy.entry реверсирует позицию);
+            # по умолчанию выключено (спецификация ORB требует игнорировать
+            # противоположный сигнал, пока позиция открыта — см. allow_flip=False)
+            opp_side = "short" if pos.side == "long" else "long"
+            opp_break = new_break_short if pos.side == "long" else new_break_long
+            opp_used = state.short_used if opp_side == "short" else state.long_used
+            if opp_break and not state.range_blocked and not opp_used and not blocked_entry:
+                exit_sig = ExitSignal("flip", bar.close)
+                stop = state.range_low if opp_side == "long" else state.range_high
+                flip_entry = EntrySignal(opp_side, bar.dt, state.range_high, state.range_low, stop)
+                if opp_side == "long":
+                    state = replace(state, long_used=True)
+                else:
+                    state = replace(state, short_used=True)
         if exit_sig is not None:
             state = replace(state, position=None)
-        return BarResult(state, exit=exit_sig)
+        return BarResult(state, entry=flip_entry, exit=exit_sig)
 
     # 4. входы — только по свежему пробою (edge-triggered), позиции нет
     entry_sig = None

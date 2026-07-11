@@ -41,6 +41,8 @@ class BacktestConfig:
     slippage_ticks: int = 2
     tick_size: float = 1.0
     risk: orb_risk.RiskConfig = orb_risk.RiskConfig()
+    allow_position_flip: bool = False    # True — как в эталонном Pine (разворот вместо игнора)
+    expiration_zone_mode: str = "trading_days"  # "trading_days" | "calendar_days" (как в Pine)
 
 
 @dataclass(frozen=True)
@@ -118,7 +120,7 @@ def run(cfg: BacktestConfig, bars: list[orb_strategy.Bar] | None = None) -> Back
                 skip_reasons.append("zero_qty")
 
         # 2. календарные и риск-блокировки входа для ЭТОГО бара
-        blocked, reason = orb_calendar.entry_gate(bar.dt)
+        blocked, reason = orb_calendar.entry_gate(bar.dt, cfg.expiration_zone_mode)
         force_flat = orb_calendar.force_flat_gate(bar.dt)
         if not blocked:
             if risk_state.halted:
@@ -126,7 +128,8 @@ def run(cfg: BacktestConfig, bars: list[orb_strategy.Bar] | None = None) -> Back
             elif orb_risk.daily_limit_hit(risk_state, cfg.deposit_rub, cfg.risk):
                 blocked, reason = True, "daily_limit"
 
-        result = orb_strategy.process_bar(state, bar, blocked, force_flat, cfg.risk.max_stop_pt)
+        result = orb_strategy.process_bar(state, bar, blocked, force_flat, cfg.risk.max_stop_pt,
+                                           allow_flip=cfg.allow_position_flip)
         state = result.state
 
         if result.exit is not None and open_meta is not None:

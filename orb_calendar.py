@@ -4,26 +4,52 @@ orb_calendar.py — календарные правила для стратег�
 В отличие от event_calendar.is_entry_blocked (общий фильтр для «3+1»), у ORB
 свои правила блокировки входа и своя логика ролловера контракта:
   - вход блокируется в день ЦБ 13:00-15:30, в среду 18:45-19:30, в клиринг,
-    И дополнительно в зоне +/-2 торговых дня от экспирации (для «3+1» эта зона
-    была только информационной, для ORB — блокирующей, см. спецификацию ORB);
+    И дополнительно в зоне вокруг экспирации (для «3+1» эта зона была только
+    информационной, для ORB — блокирующей, см. спецификацию ORB);
   - открытая позиция принудительно закрывается ТОЛЬКО жёстким блоком (день ЦБ,
     13:00-15:30) — это единственный жёсткий блок в текущей спецификации;
   - активный квартальный контракт определяется с ролловером за 2 торговых дня
-    до экспирации (раньше, чем реальная дата экспирации).
+    до экспирации (раньше, чем реальная дата экспирации) — это НЕ зависит от
+    expiration_zone_mode ниже (ролловер контракта всегда по торговым дням).
+
+expiration_zone_mode ("trading_days" | "calendar_days") — ширина зоны блокировки
+входа вокруг экспирации:
+  - "trading_days" (по умолчанию) — честные +/-2 ТОРГОВЫХ дня (event_calendar.
+    EventFlag.EXPIRATION_ADJ); поскольку экспирация всегда в четверг, вперёд
+    это захватывает и следующий понедельник (выходные не считаются торговыми);
+  - "calendar_days" — как в эталонном Pine-скрипте (si_strategy_lab.pine):
+    наивные +/-2 КАЛЕНДАРНЫХ дня по номеру дня месяца (abs(d.day-exp.day)<=2),
+    без расширения через выходные — зона на 1 торговый день ýже.
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime
 
-from event_calendar import EventFlag, event_status, expiration_dates, trading_day_offset
+from event_calendar import EventFlag, MSK, event_status, expiration_dates, trading_day_offset
 
 _ROLLOVER_TRADING_DAYS = 2
+_CALENDAR_ZONE_DAYS = 2
 
 _MONTH_CODE = {3: "H", 6: "M", 9: "U", 12: "Z"}
 
 
-def entry_gate(dt: datetime) -> tuple[bool, str | None]:
+def _msk_date(dt: datetime) -> date:
+    if dt.tzinfo is None:
+        return dt.date()
+    return dt.astimezone(MSK).date()
+
+
+def _is_in_calendar_day_zone(d: date, n: int = _CALENDAR_ZONE_DAYS) -> bool:
+    """Наивная зона +/- n КАЛЕНДАРНЫХ дней вокруг экспирации — как в эталонном
+    Pine-скрипте (abs(d - expDay) по номеру дня месяца, без учёта выходных)."""
+    for exp in expiration_dates(d.year):
+        if exp.month == d.month and abs(d.day - exp.day) <= n:
+            return True
+    return False
+
+
+def entry_gate(dt: datetime, expiration_zone_mode: str = "trading_days") -> tuple[bool, str | None]:
     """(blocked, reason) — блокировка нового входа по календарю (без риск-модуля).
 
     reason — один из: blocked_cbr, blocked_cpi, blocked_clearing,
@@ -35,7 +61,12 @@ def entry_gate(dt: datetime) -> tuple[bool, str | None]:
         return True, "blocked_cpi"
     if flags & EventFlag.CLEARING:
         return True, "blocked_clearing"
-    if flags & EventFlag.EXPIRATION_ADJ:
+
+    if expiration_zone_mode == "calendar_days":
+        in_zone = _is_in_calendar_day_zone(_msk_date(dt))
+    else:
+        in_zone = bool(flags & EventFlag.EXPIRATION_ADJ)
+    if in_zone:
         return True, "blocked_expiration_adj"
     return False, None
 

@@ -172,6 +172,9 @@ class OrbOrchestrator:
         self.state = orb_strategy.OrbState()
         risk_cfg = cfg.get("risk", {})
         self.risk_cfg = orb_risk.RiskConfig(**risk_cfg) if risk_cfg else orb_risk.RiskConfig()
+        strat_cfg = cfg.get("strategy", {})
+        self.allow_position_flip = bool(strat_cfg.get("allow_position_flip", False))
+        self.expiration_zone_mode = strat_cfg.get("expiration_zone_mode", "trading_days")
         self.risk_path = HERE / cfg["paths"]["risk_state_json"]
         self.risk_state = orb_risk.load_risk_state(self.risk_path)
         self.trades_path = HERE / cfg["paths"]["trades_csv"]
@@ -237,7 +240,7 @@ class OrbOrchestrator:
                 if not replay:
                     orb_journal.append_skip(self.skips_path, bar.dt, entry.side, "zero_qty")
 
-        blocked, reason = orb_calendar.entry_gate(bar.dt)
+        blocked, reason = orb_calendar.entry_gate(bar.dt, self.expiration_zone_mode)
         force_flat = orb_calendar.force_flat_gate(bar.dt)
         if not blocked:
             if self.risk_state.halted:
@@ -245,7 +248,8 @@ class OrbOrchestrator:
             elif orb_risk.daily_limit_hit(self.risk_state, self.cfg["deposit_rub"], self.risk_cfg):
                 blocked, reason = True, "daily_limit"
 
-        result = orb_strategy.process_bar(self.state, bar, blocked, force_flat, self.risk_cfg.max_stop_pt)
+        result = orb_strategy.process_bar(self.state, bar, blocked, force_flat, self.risk_cfg.max_stop_pt,
+                                           allow_flip=self.allow_position_flip)
         self.state = result.state
 
         if result.exit is not None and self.open_meta is not None:
@@ -385,6 +389,7 @@ def main() -> None:
     if mode == "backtest":
         import orb_backtest  # локальный импорт — бэктесту не нужен QuikPy/argparse-контекст live
         bt_cfg = cfg["backtest"]
+        strat_cfg = cfg.get("strategy", {})
         risk_cfg = orb_risk.RiskConfig(**cfg.get("risk", {})) if cfg.get("risk") else orb_risk.RiskConfig()
         b = orb_backtest.BacktestConfig(
             date_from=date.fromisoformat(bt_cfg["date_from"]),
@@ -397,6 +402,8 @@ def main() -> None:
             slippage_ticks=int(bt_cfg.get("slippage_ticks", 2)),
             tick_size=float(cfg.get("tick_size", 1.0)),
             risk=risk_cfg,
+            allow_position_flip=bool(strat_cfg.get("allow_position_flip", False)),
+            expiration_zone_mode=strat_cfg.get("expiration_zone_mode", "trading_days"),
         )
         res = orb_backtest.run(b)
         log.info("Бэктест завершён: %s", res.summary)
