@@ -57,7 +57,11 @@ except Exception as e:  # noqa: BLE001
     _fatal_startup_error(
         "не удалось импортировать модули робота",
         "Проверь, что рядом с orb_window.py лежат orb_robot.py/orb_journal.py/orb_risk.py/"
-        "config_orb.yaml, и что установлен пакет pyyaml (pip install pyyaml).\n"
+        "config_orb.yaml, и что установлен пакет pyyaml.\n"
+        "ВАЖНО: если на компьютере несколько установленных Python, `pip install` мог "
+        "поставить пакет НЕ в тот интерпретатор, который сейчас запускает этот скрипт.\n"
+        f"Этот скрипт запущен через: {sys.executable}\n"
+        f'Поставь пакет именно сюда командой:\n    "{sys.executable}" -m pip install pyyaml pandas requests pyarrow\n\n'
         f"Исходная ошибка: {e!r}\n{traceback.format_exc()}")
     input("Нажми Enter, чтобы закрыть окно консоли...")
     sys.exit(1)

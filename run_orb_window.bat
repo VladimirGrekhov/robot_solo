@@ -20,6 +20,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo Используется интерпретатор (если модуль не найден — ставь пакеты именно сюда,
+echo например: "путь_ниже" -m pip install -r requirements.txt):
+%PY% -c "import sys; print(sys.executable)"
+echo.
 echo Running: %PY% orb_window.py
 echo (лог старта: logs\orb_window.log)
 echo.
