@@ -18,6 +18,7 @@ orb_broker_quik.py    — отправка заявок через QuikPy (ТР�
 orb_robot.py          — точка входа: backtest / paper / live
 config_orb.yaml        — конфиг
 event_calendar.py, cbr_dates.csv — календарь ЦБ/CPI/клиринг/экспирация
+run_orb_backtest.bat, run_orb_paper.bat, run_orb_live.bat — запуск на Windows
 tests/test_orb_*.py    — pytest
 ```
 
@@ -70,6 +71,8 @@ tests/test_orb_*.py    — pytest
 ```
 python orb_robot.py --mode backtest
 ```
+
+На Windows — то же самое через `run_orb_backtest.bat`.
 
 Данные — MOEX ISS (`iss.moex.com`, бесплатно, без ключа), 1-минутные свечи
 агрегируются в M15 через pandas и кэшируются в parquet (`backtest.cache_dir` в
@@ -171,7 +174,7 @@ M5 диапазон/пробой считаются точнее (по 5-мин�
 5. Если робот запущен не с самого начала дня — в логе будет предупреждение,
    если по разметке уже должна быть открытая позиция; сверь вручную с реальным
    состоянием счёта в QUIK (авто-сверки открытых позиций при рестарте нет).
-6. `python orb_robot.py --mode paper`.
+6. `python orb_robot.py --mode paper` (на Windows — `run_orb_paper.bat`).
 
 ## Чек-лист перехода на live
 
@@ -186,8 +189,8 @@ M5 диапазон/пробой считаются точнее (по 5-мин�
    (`send_stop_order`) — если робот упадёт, позиция должна остаться защищённой
    биржевым стопом, а не программной проверкой.
 5. Выставить `live_trading: true` и `mode: live`.
-6. Запустить `python orb_robot.py --mode live` — потребует ввода `yes` в
-   консоли для подтверждения перед стартом.
+6. Запустить `python orb_robot.py --mode live` (на Windows — `run_orb_live.bat`) —
+   потребует ввода `yes` в консоли для подтверждения перед стартом.
 7. Знать, где лежит kill switch: создать пустой файл `STOP` в рабочей папке
    (`kill_switch_dir` в конфиге) немедленно останавливает робота и закрывает
    позицию по рынку.
