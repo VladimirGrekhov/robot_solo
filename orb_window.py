@@ -50,6 +50,7 @@ except Exception as e:  # noqa: BLE001
     sys.exit(1)
 
 try:
+    import orb_calendar
     import orb_journal
     import orb_risk
     import orb_robot as R
@@ -105,6 +106,7 @@ class App(tk.Tk):
         self.q: "queue.Queue" = queue.Queue()
         self._stop = threading.Event()
         self._worker: threading.Thread | None = None
+        self._btq_worker: threading.Thread | None = None
 
         self.title("orb_robot — ORB (Opening Range Breakout)")
         self.configure(bg=BG)
@@ -194,8 +196,12 @@ class App(tk.Tk):
         self._build_settings(self.tab_settings)
 
         self.tab_backtest = tk.Frame(nb, bg=BG)
-        nb.add(self.tab_backtest, text="Бэктест")
+        nb.add(self.tab_backtest, text="Бэктест (MOEX ISS)")
         self._build_backtest(self.tab_backtest)
+
+        self.tab_backtest_quik = tk.Frame(nb, bg=BG)
+        nb.add(self.tab_backtest_quik, text="Бэктест (QUIK)")
+        self._build_backtest_quik(self.tab_backtest_quik)
 
         self.tab_analytics = tk.Frame(nb, bg=BG)
         nb.add(self.tab_analytics, text="Аналитика")
@@ -421,6 +427,108 @@ class App(tk.Tk):
         except Exception as e:  # noqa: BLE001
             self.q.put(("backtest_done", {"ok": False, "lines": [f"Ошибка: {e!r}"]}))
 
+    # --- вкладка «Бэктест (QUIK)» ---------------------------------------------------
+    def _build_backtest_quik(self, parent):
+        tk.Label(parent, text="Бэктест по графику QUIK", bg=BG, fg=FG, font=FONT_BOLD).pack(
+            anchor="w", padx=12, pady=(12, 2))
+        tk.Label(parent, text="Свечи берутся из уже открытого в QUIK M15-графика (chart_tag), "
+                              "один текущий контракт, столько истории, сколько загружено в терминале. "
+                              "Без комиссии и проскальзывания — просто прогон стратегии по тому, что "
+                              "видно на графике. ГО и стоимость пункта читаются вживую из QUIK (текущие, "
+                              "не исторические). Недоступно, пока робот запущен (Старт/Стоп выше).",
+                 bg=BG, fg=FG_MUTED, font=("Segoe UI", 9), wraplength=720, justify="left").pack(
+            anchor="w", padx=12, pady=(0, 8))
+
+        bar = tk.Frame(parent, bg=BG)
+        bar.pack(fill="x", padx=12)
+        self.btq_btn = tk.Button(bar, text="Запустить бэктест по графику QUIK", command=self._run_backtest_quik,
+                                 bg=ACCENT, fg=FG, activebackground="#4a4a5a", activeforeground=FG,
+                                 relief="flat", font=FONT, padx=14, pady=4, cursor="hand2")
+        self.btq_btn.pack(side="left")
+        self.btq_status = tk.Label(bar, text="", bg=BG, fg=FG_MUTED, font=FONT)
+        self.btq_status.pack(side="left", padx=12)
+
+        self.btq_text = tk.Text(parent, bg=BG_PANEL, fg=FG, font=FONT_MONO, relief="flat",
+                                wrap="word", padx=10, pady=8, height=16)
+        self.btq_text.pack(fill="both", expand=True, padx=8, pady=8)
+        self.btq_text.configure(state="disabled")
+
+    def _run_backtest_quik(self):
+        if self._worker is not None and self._worker.is_alive():
+            messagebox.showwarning("Робот запущен",
+                                    "Сначала останови робота (Стоп) — бэктест по графику QUIK "
+                                    "использует отдельное подключение и не запускается параллельно.")
+            return
+        self.btq_btn.config(state="disabled")
+        self.btq_status.config(text="считаю…", fg=YELLOW)
+        self._btq_worker = threading.Thread(target=self._run_backtest_quik_worker, daemon=True)
+        self._btq_worker.start()
+
+    def _run_backtest_quik_worker(self):
+        try:
+            import orb_backtest  # ленивый импорт: тянет pandas/requests, нужен только тут
+        except Exception as e:  # noqa: BLE001
+            log.error("import orb_backtest не удался: %r", e, exc_info=True)
+            self.q.put(("backtest_quik_done", {"ok": False, "lines": [
+                "Не установлены зависимости бэктеста.",
+                "Выполни: pip install pandas requests pyarrow",
+                f"Исходная ошибка: {e!r}"]}))
+            return
+
+        qp = None
+        try:
+            qp = R.connect_quik(self.cfg)
+            if qp is None:
+                self.q.put(("backtest_quik_done", {"ok": False,
+                                                    "lines": ["Нет подключения к QUIK — терминал запущен?"]}))
+                return
+
+            tag = self.cfg["chart_tag"]
+            candles = R._load_recent(qp, tag, want=None)
+            closed = candles[:-1] if candles else []  # последний бар ещё формируется
+            bars = [b for c in closed if (b := R._to_bar(c)) is not None]
+            if not bars:
+                self.q.put(("backtest_quik_done", {"ok": False, "lines": [
+                    f"На графике с тегом '{tag}' нет закрытых баров. Открыт ли нужный график в QUIK?"]}))
+                return
+
+            from datetime import date as _date
+            cls = self.cfg["class_code"]
+            tick = float(self.cfg.get("tick_size", 1.0))
+            sec = orb_calendar.active_contract(_date.today())
+            fallback_go = self.cfg.get("backtest", {}).get("go_per_contract_assumed", 12000.0)
+            rpp = R._rub_per_point(qp, cls, sec, tick) or 1.0
+            go = R._read_go(qp, cls, sec) or fallback_go
+
+            strat_cfg = self.cfg.get("strategy", {})
+            risk_cfg = orb_risk.RiskConfig(**self.cfg.get("risk", {})) if self.cfg.get("risk") else orb_risk.RiskConfig()
+            b = orb_backtest.BacktestConfig(
+                date_from=_date.today(), date_till=_date.today(), cache_dir=Path("."),
+                deposit_rub=float(self.cfg.get("deposit_rub", 300000.0)),
+                rub_per_point=rpp, go_per_contract_assumed=go,
+                commission_per_side_rub=0.0, slippage_ticks=0, tick_size=tick,
+                risk=risk_cfg,
+                allow_position_flip=bool(strat_cfg.get("allow_position_flip", False)),
+                expiration_zone_mode=strat_cfg.get("expiration_zone_mode", "trading_days"),
+            )
+            res = orb_backtest.run(b, bars=bars)
+            lines = [
+                f"Контракт (предположительно): {sec} · тег графика '{tag}'",
+                f"Баров: {len(bars)} ({bars[0].dt:%Y-%m-%d %H:%M} → {bars[-1].dt:%Y-%m-%d %H:%M})",
+                f"Стоимость пункта: {rpp:.2f} ₽ · ГО: {go:.0f} ₽ (текущие значения из QUIK, не исторические)",
+                f"Сделок: {res.summary['trades']}",
+            ] + orb_journal.summary_lines(res.summary)
+            self.q.put(("backtest_quik_done", {"ok": True, "lines": lines}))
+        except Exception as e:  # noqa: BLE001
+            log.error("бэктест по графику QUIK упал: %r", e, exc_info=True)
+            self.q.put(("backtest_quik_done", {"ok": False, "lines": [f"Ошибка: {e!r}"]}))
+        finally:
+            if qp is not None:
+                try:
+                    qp.close_connection_and_thread()
+                except Exception:
+                    pass
+
     # --- вкладка «Аналитика» — сводка по logs/orb_trades.csv/orb_skips.csv --------
     def _build_analytics(self, parent):
         tk.Label(parent, text="Сводка по журналу сделок", bg=BG, fg=FG, font=FONT_BOLD).pack(
@@ -570,6 +678,11 @@ class App(tk.Tk):
     def _start(self):
         if self._worker and self._worker.is_alive():
             return
+        if self._btq_worker and self._btq_worker.is_alive():
+            messagebox.showwarning("Бэктест по графику QUIK ещё считает",
+                                    "Дождись окончания бэктеста по графику QUIK (вкладка "
+                                    "«Бэктест (QUIK)») — он держит отдельное подключение к терминалу.")
+            return
         live = self._mode_var.get() == "live"
         confirmed = False
         if live:
@@ -648,6 +761,14 @@ class App(tk.Tk):
             self.bt_text.delete("1.0", "end")
             self.bt_text.insert("end", "\n".join(data["lines"]))
             self.bt_text.configure(state="disabled")
+        elif kind == "backtest_quik_done":
+            self.btq_btn.config(state="normal")
+            self.btq_status.config(text="готово" if data["ok"] else "ошибка",
+                                   fg=GREEN if data["ok"] else RED)
+            self.btq_text.configure(state="normal")
+            self.btq_text.delete("1.0", "end")
+            self.btq_text.insert("end", "\n".join(data["lines"]))
+            self.btq_text.configure(state="disabled")
         elif kind == "error":
             self._set_lamp(RED)
             self.status_lbl.config(text="ошибка")

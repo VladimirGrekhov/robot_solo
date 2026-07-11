@@ -23,7 +23,6 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import orb_calendar
-import orb_data_moex
 import orb_journal
 import orb_risk
 import orb_strategy
@@ -70,7 +69,11 @@ def contract_segments(date_from: date, date_till: date) -> list[tuple[str, date,
 
 
 def load_bars(cfg: BacktestConfig) -> list[orb_strategy.Bar]:
-    """Грузит и хронологически склеивает M15-бары всех активных за период контрактов."""
+    """Грузит и хронологически склеивает M15-бары всех активных за период контрактов.
+
+    Ленивый import orb_data_moex (тянет pandas/requests) — чтобы run(cfg, bars=...)
+    с уже готовыми барами (например, из графика QUIK) не требовал этих зависимостей."""
+    import orb_data_moex
     bars: list[orb_strategy.Bar] = []
     for ticker, seg_start, seg_end in contract_segments(cfg.date_from, cfg.date_till):
         df = orb_data_moex.load_contract_m15(ticker, seg_start, seg_end, cfg.cache_dir)
