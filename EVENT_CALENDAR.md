@@ -10,10 +10,12 @@ Europe/Moscow; на вход принимаются как naive datetime (сч�
 ```
 event_calendar.py        — календарь событий: event_status / is_entry_blocked / next_event
 cbr_dates.csv             — даты заседаний ЦБ РФ 2024-2026 (date,note)
-splice_guard.py           — маркировка фиктивных гэпов склейки контрактов в OHLCV
-backtest_filter_demo.py   — A/B/C-демо бэктеста с/без календарного фильтра
 tests/test_event_calendar.py — pytest
 ```
+
+Используется роботом `orb_robot.py` (см. `ORB_README.md`) через обёртку
+`orb_calendar.py` — там же своя (более строгая) логика блокировки входа для
+стратегии ORB, отличная от `is_entry_blocked` ниже.
 
 ## Таблица окон
 
@@ -25,7 +27,7 @@ tests/test_event_calendar.py — pytest
 | `CLEARING` | 14:00–14:05 и 18:50–19:05, будни | да, мягко |
 | `TAX_PERIOD` | 25–28 число месяца | нет (информационный) |
 | `EXPIRATION` | третий четверг мар/июн/сен/дек | нет (информационный) |
-| `EXPIRATION_ADJ` | ±2 торговых дня от экспирации | нет для входа, но исключается из бэктеста (`splice_guard`) |
+| `EXPIRATION_ADJ` | ±2 торговых дня от экспирации | нет (информационный); для ORB — блокирует, см. `orb_calendar.entry_gate` |
 
 Границы окон — полуоткрытые интервалы `[начало, конец)`: например, для `CBR_HOT`
 13:00:00 уже блокирует, 15:30:00 — уже нет.
@@ -37,8 +39,8 @@ tests/test_event_calendar.py — pytest
 - `TAX_PERIOD` — 69 налоговых дней против 331 обычного не показали направленного
   смещения (50.7% красных против 52.3%) — оставлен информационным, не блокирует;
 - `EXPIRATION_ADJ` — на склейке гэпы контанго до +5498/+3981/+3485 пунктов —
-  это не движение рынка, поэтому не блокирует вход, но такие сделки исключаются
-  из результатов бэктеста через `splice_guard`.
+  это не движение рынка, поэтому здесь не блокирует вход (информационный флаг);
+  для ORB эта зона блокирует вход, см. `ORB_README.md`.
 
 ## Ограничения
 
@@ -69,10 +71,7 @@ next_event(dt)  # (ближайший следующий datetime, флаг, к�
 Интеграция с бэктестом на pandas:
 
 ```python
-from splice_guard import mark_splice_gaps
 from event_calendar import is_entry_blocked
-
-df = mark_splice_gaps(df)  # добавит df["splice_suspect"]
 
 for ts in signal_timestamps:
     if is_entry_blocked(ts):        # мягкий фильтр
@@ -80,16 +79,8 @@ for ts in signal_timestamps:
     ...
 ```
 
-Полный A/B/C-прогон (без фильтра / мягкий / жёсткий) с готовыми метриками
-(число сделок, winrate, средний PnL, профит-фактор, макс. просадка):
-
-```
-python backtest_filter_demo.py path/to/m5.csv
-```
-
-Сигнальная функция `signal_func` в `backtest_filter_demo.py` — заглушка,
-замени её на свою логику паттерна «3+1» (сейчас там условный пробойный
-плейсхолдер, только чтобы демо давало не пустой набор сделок).
+Готовая интеграция с полноценным риск-модулем, журналом сделок и режимами
+backtest/paper/live — см. `orb_robot.py` и `ORB_README.md`.
 
 ## Тесты
 

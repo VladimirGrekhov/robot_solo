@@ -8,9 +8,9 @@ orb_robot.py — точка входа робота ORB (Opening Range Breakout)
   live     — реальные заявки. Требует live_trading: true в конфиге И ручного
              подтверждения "yes" при старте процесса.
 
-Подключение к QUIK и чтение свечей по тегу графика — тот же рабочий приём, что
-и в pattern_robot.py (get_num_candles/get_candles по chart_tag, свой QuikPy-слот);
-вся торговая логика (orb_strategy/orb_risk/orb_calendar) от QuikPy не зависит.
+Подключение к QUIK и чтение свечей по тегу графика — через QuikPy напрямую
+(get_num_candles/get_candles по chart_tag, свой слот); вся торговая логика
+(orb_strategy/orb_risk/orb_calendar) от QuikPy не зависит и тестируется без терминала.
 """
 
 from __future__ import annotations
@@ -55,10 +55,7 @@ def setup_logging(cfg: dict) -> None:
 
 
 def connect_quik(cfg: dict):
-    """Подключение к QUIK напрямую через QuikPy на своём слоте (см. config_orb.yaml: slot).
-
-    Тот же приём, что и в pattern_robot.connect_quik — отдельная копия, чтобы ORB
-    и «3+1» не зависели друг от друга как от модулей (разные роботы, общая инфраструктура)."""
+    """Подключение к QUIK напрямую через QuikPy на своём слоте (см. config_orb.yaml: slot)."""
     slot = cfg.get("slot", {})
     qpd = slot.get("quik_py_dir")
     for c in ([Path(qpd)] if qpd else []) + [HERE, *HERE.parents]:
@@ -130,7 +127,7 @@ def _load_recent(qp, tag: str, want: int | None = None) -> list[dict]:
 
 
 def _rub_per_point(qp, cls: str, sec: str, tick_size: float) -> float | None:
-    """Стоимость 1 пункта цены в рублях для 1 контракта (см. pattern_robot._rub_per_point).
+    """Стоимость 1 пункта цены в рублях для 1 контракта (QUIK-параметр STEPPRICE).
     Для Si обычно ровно 1.0 — читаем живьём на случай, если это когда-то изменится."""
     try:
         d = qp.get_param_ex(cls, sec, "STEPPRICE").get("data") or {}
@@ -144,7 +141,7 @@ def _rub_per_point(qp, cls: str, sec: str, tick_size: float) -> float | None:
 
 
 def _read_go(qp, cls: str, sec: str) -> float | None:
-    """ГО (нач. маржа) на 1 контракт — max(BUYDEPO, SELLDEPO), см. pattern_robot._read_go."""
+    """ГО (нач. маржа) на 1 контракт — max(BUYDEPO, SELLDEPO), параметры QUIK FORTS."""
     vals = []
     for param in ("BUYDEPO", "SELLDEPO"):
         try:
