@@ -41,7 +41,7 @@ data_cache/           — parquet-кэш свечей MOEX ISS для бэкте
 ## Быстрый старт
 
 ```
-pip install pandas pyyaml requests pyarrow pytest
+pip install -r requirements.txt
 pytest tests/                        # 50 тестов, без сети и без QUIK
 python orb_robot.py --mode backtest  # прогон на истории MOEX ISS (консоль)
 python orb_window.py                 # окно: настройки, бэктест, счёт, лента сигналов

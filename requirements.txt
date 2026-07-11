@@ -1,0 +1,10 @@
+# Обязательно для orb_robot.py / orb_window.py (paper/live и настройки):
+pyyaml
+
+# Только для режима backtest (вкладка «Бэктест» в окне, orb_backtest.py/orb_data_moex.py):
+pandas
+requests
+pyarrow
+
+# Для тестов:
+pytest
