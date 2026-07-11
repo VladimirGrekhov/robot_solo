@@ -27,6 +27,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import orb_account
 import orb_broker_quik
 import orb_calendar
 import orb_journal
@@ -41,6 +42,16 @@ def load_config(path: str | Path | None = None) -> dict:
     path = Path(path) if path else HERE / "config_orb.yaml"
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def save_config(cfg: dict, path: str | Path | None = None) -> None:
+    """Атомарная запись config_orb.yaml: во временный файл и замена, чтобы при
+    сбое посередине не остался повреждённый конфиг (см. pattern у старого робота)."""
+    path = Path(path) if path else HERE / "config_orb.yaml"
+    tmp = path.with_suffix(path.suffix + ".part")
+    with open(tmp, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+    tmp.replace(path)
 
 
 def setup_logging(cfg: dict) -> None:
@@ -162,10 +173,11 @@ class OrbOrchestrator:
     live=True — при live_trading=True в конфиге реально шлёт заявки через orb_broker_quik.
     """
 
-    def __init__(self, cfg: dict, qp, live: bool):
+    def __init__(self, cfg: dict, qp, live: bool, on_event=None):
         self.cfg = cfg
         self.qp = qp
         self.live = live
+        self.on_event = on_event
         self.state = orb_strategy.OrbState()
         risk_cfg = cfg.get("risk", {})
         self.risk_cfg = orb_risk.RiskConfig(**risk_cfg) if risk_cfg else orb_risk.RiskConfig()
@@ -180,6 +192,10 @@ class OrbOrchestrator:
         self.open_meta: dict | None = None
         self.pending_entry: orb_strategy.EntrySignal | None = None
         self.halted_by_kill_switch = False
+
+    def _emit(self, kind: str, data: dict) -> None:
+        if self.on_event:
+            self.on_event(kind, data)
 
     def _contract(self, d: date) -> str:
         return orb_calendar.active_contract(d)
@@ -208,6 +224,8 @@ class OrbOrchestrator:
                 log.info("ВЫХОД %s: причина=kill pnl=%.2f пт / %.2f руб", trade.dir, trade.pnl_pt, trade.pnl_rub)
                 if self.live and not replay:
                     self._send_flat(self.state.position.side, reason="kill")
+                if not replay:
+                    self._emit("trade", self._trade_payload(trade))
                 self.open_meta = None
             self.state = _replace(self.state, position=None)
             return
@@ -232,10 +250,15 @@ class OrbOrchestrator:
                          entry.side.upper(), bar.dt, bar.open, entry.stop_price, qty)
                 if self.live and not replay:
                     self._send_entry_orders(sec, entry.side, qty, entry.stop_price)
+                if not replay:
+                    self._emit("entry", {"side": entry.side, "bar": bar.dt.isoformat(sep=" "),
+                                          "price": bar.open, "stop": entry.stop_price, "qty": qty})
             else:
                 log.info("вход %s пропущен: нулевой размер позиции (риск/ГО-лимит)", entry.side)
                 if not replay:
                     orb_journal.append_skip(self.skips_path, bar.dt, entry.side, "zero_qty")
+                    self._emit("skip", {"side": entry.side, "reason": "zero_qty",
+                                        "bar": bar.dt.isoformat(sep=" ")})
 
         blocked, reason = orb_calendar.entry_gate(bar.dt, self.expiration_zone_mode)
         force_flat = orb_calendar.force_flat_gate(bar.dt)
@@ -259,6 +282,8 @@ class OrbOrchestrator:
                      trade.pnl_pt, trade.pnl_rub)
             if self.live and not replay:
                 self._send_flat(trade.dir, reason=trade.exit_reason)
+            if not replay:
+                self._emit("trade", self._trade_payload(trade))
             self.open_meta = None
 
         if result.entry is not None:
@@ -269,6 +294,8 @@ class OrbOrchestrator:
             log.info("пропуск сигнала %s: %s", result.skip.side, specific)
             if not replay:
                 orb_journal.append_skip(self.skips_path, bar.dt, result.skip.side, specific)
+                self._emit("skip", {"side": result.skip.side, "reason": specific,
+                                    "bar": bar.dt.isoformat(sep=" ")})
 
     def _close_trade(self, bar: orb_strategy.Bar, exit_sig: orb_strategy.ExitSignal) -> orb_journal.TradeRecord:
         m = self.open_meta
@@ -280,6 +307,14 @@ class OrbOrchestrator:
             entry=m["entry_price"], exit=exit_sig.price, stop=m["stop_price"],
             pnl_pt=pnl_pt, pnl_rub=pnl_rub, exit_reason=exit_sig.reason,
             range_width_pt=m["range_width"], event_flags="")
+
+    @staticmethod
+    def _trade_payload(trade: orb_journal.TradeRecord) -> dict:
+        return {"dir": trade.dir, "qty": trade.qty, "entry": trade.entry, "exit": trade.exit,
+                "stop": trade.stop, "pnl_pt": trade.pnl_pt, "pnl_rub": trade.pnl_rub,
+                "exit_reason": trade.exit_reason,
+                "datetime_in": trade.datetime_in.isoformat(sep=" "),
+                "datetime_out": trade.datetime_out.isoformat(sep=" ")}
 
     def _send_entry_orders(self, sec: str, side: str, qty: int, stop_price: float) -> None:
         cfg = self.cfg
@@ -308,11 +343,37 @@ def _next_wake(now: datetime, tf: int, delay: float) -> datetime:
     return boundary + timedelta(seconds=delay)
 
 
-def run_paper_or_live(cfg: dict, live: bool) -> None:
+def _account_payload(snap: dict | None) -> dict:
+    if snap is None:
+        return {"ok": False, "lines": orb_account.format_account(None)}
+    return {"ok": True, "currency": snap["currency"], "equity": snap["equity_derived"],
+            "free": snap["free_derived"], "limit": snap["limit"], "used": snap["used"],
+            "varmargin": snap["varmargin"], "commission": snap["commission"],
+            "go": snap["go_planned"] or snap["go_without_orders"], "kgo": snap["kgo"],
+            "risk_level": snap["risk_level"], "trdacc": orb_account._mask(snap["trdacc"]),
+            "firm": snap["firm_id"], "lines": orb_account.format_account(snap)}
+
+
+def _emit_account(qp, firm, acc, on_event) -> None:
+    if not on_event:
+        return
+    try:
+        snap = orb_account.read_account(qp, firm, acc)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Чтение средств не удалось: %r", e)
+        snap = None
+    on_event("account", _account_payload(snap))
+
+
+def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, confirmed: bool = False) -> None:
+    """stop_event/on_event — для GUI (orb_window.py): остановка из окна и поток событий в интерфейс.
+    confirmed=True пропускает интерактивное подтверждение live (его тогда должен показать сам GUI)."""
     if live and not cfg.get("live_trading", False):
         log.error("mode=live, но live_trading=false в конфиге — отказываюсь торговать по-настоящему.")
+        if on_event:
+            on_event("error", {"text": "live_trading=false в конфиге"})
         return
-    if live:
+    if live and not confirmed:
         answer = input('Подтвердите запуск LIVE (реальные заявки) — введите "yes": ')
         if answer.strip().lower() != "yes":
             log.info("Не подтверждено — выхожу без запуска live.")
@@ -321,6 +382,8 @@ def run_paper_or_live(cfg: dict, live: bool) -> None:
     qp = connect_quik(cfg)
     if qp is None:
         log.error("Нет подключения к QUIK — работа невозможна.")
+        if on_event:
+            on_event("error", {"text": "Нет подключения к QUIK"})
         return
 
     tag = cfg["chart_tag"]
@@ -331,7 +394,10 @@ def run_paper_or_live(cfg: dict, live: bool) -> None:
     log.info("Ожидаемый активный контракт на сегодня: %s — сверь, что график с тегом '%s' привязан к нему.",
              expected, tag)
 
-    orch = OrbOrchestrator(cfg, qp, live)
+    orch = OrbOrchestrator(cfg, qp, live, on_event=on_event)
+
+    def _stopped():
+        return stop_event is not None and stop_event.is_set()
 
     # разметка сегодняшних баров (если робот запущен посреди дня) — реплей БЕЗ реальных заявок,
     # только чтобы восстановить диапазон/флаги/(предположительную) открытую позицию
@@ -349,12 +415,29 @@ def run_paper_or_live(cfg: dict, live: bool) -> None:
     last_dt = _bar_dt(todays[-1]) if todays else None
     log.info("Старт ORB. режим=%s live_trading=%s tf=%d мин", "live" if live else "paper",
              cfg.get("live_trading"), tf)
+    if on_event:
+        on_event("start", {"mode": "live" if live else "paper", "live_trading": cfg.get("live_trading"),
+                           "contract": expected, "tag": tag, "tf": tf})
+
+    acct_firm, acct_trdacc = orb_account.find_futures_account(qp)
+    _emit_account(qp, acct_firm, acct_trdacc, on_event)
+    acct_every = float(cfg.get("account_poll_seconds", 10))
+    next_acct = datetime.now()
 
     try:
-        while True:
+        while not _stopped():
             wake = _next_wake(datetime.now(), tf, delay)
-            while datetime.now() < wake:
+            if on_event:
+                on_event("waiting", {"until": wake.strftime("%H:%M:%S")})
+            while datetime.now() < wake and not _stopped():
+                if datetime.now() >= next_acct:
+                    _emit_account(qp, acct_firm, acct_trdacc, on_event)
+                    next_acct = datetime.now() + timedelta(seconds=acct_every)
                 _time.sleep(min(1.0, (wake - datetime.now()).total_seconds()))
+            if _stopped():
+                break
+            if on_event:
+                on_event("wake", {"time": datetime.now().strftime("%H:%M:%S")})
             candles = _load_recent(qp, tag, want=max(80, 5))
             closed = candles[:-1] if candles else []
             new = [c for c in closed if (_bar_dt(c) or datetime.min) > (last_dt or datetime.min)]
@@ -368,6 +451,9 @@ def run_paper_or_live(cfg: dict, live: bool) -> None:
                 break
     except KeyboardInterrupt:
         log.info("Остановлен пользователем (Ctrl+C).")
+    finally:
+        if on_event:
+            on_event("stopped", {})
 
 
 def main() -> None:

@@ -30,6 +30,7 @@ tick_size: 1.0
 
 timeframe_minutes: 15
 bar_close_delay_seconds: 7
+account_poll_seconds: 10   # как часто опрашивать средства счёта (вкладка «Счёт» в orb_window.py)
 
 risk:
   risk_per_trade: 0.01
@@ -73,3 +74,5 @@ paths:
   log_dir: logs
 
 kill_switch_dir: "."   # наличие файла STOP в этой директории -> немедленная остановка
+
+window_geometry: "820x680+60+60"   # запоминается автоматически при сохранении настроек в orb_window.py
