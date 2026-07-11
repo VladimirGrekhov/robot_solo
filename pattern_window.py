@@ -611,6 +611,8 @@ class App(tk.Tk):
             line = (f"{data['bar']} · {data['instrument']} · {side} · "
                     f"вход {data['entry']:.2f} стоп {data['stop']:.2f} тейк {data['target']:.2f} · "
                     f"{data['oi']} · стрелка {data['drawn']} · {data['source']}")
+            if data.get("calendar_blocked"):
+                line += f" · ЗАБЛОКИРОВАНО КАЛЕНДАРЁМ ({data.get('calendar_label')})"
             self._append(self.feed, line)
             if data.get("oi", "").startswith("ОИ="):
                 c = self._cards.get(data["instrument"])

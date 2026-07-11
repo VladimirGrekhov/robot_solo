@@ -26,9 +26,33 @@ import account
 from detector import detect
 from analyze import (evaluate_outcome, drawdown_stats, period_stats,
                      summarize, summarize_by_risk, summary_report)
+from event_calendar import is_entry_blocked, event_status, EventFlag
 
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("pattern_robot")
+
+_CALENDAR_LABELS = {
+    EventFlag.CBR_HOT: "ЦБ 13:00-15:30",
+    EventFlag.CPI_WINDOW: "CPI среда 18:45-19:30",
+    EventFlag.CLEARING: "клиринг",
+}
+
+
+def _calendar_note(cfg: dict, candle: dict):
+    """(blocked, label) по календарному фильтру для бара candle (см. event_calendar.py).
+
+    label — человекочитаемый список сработавших флагов (или None, если ничего не сработало).
+    blocked — должен ли вход быть заблокирован (calendar_filter.hard_only из config.json)."""
+    cal = cfg.get("calendar_filter", {})
+    if not cal.get("enabled", True):
+        return False, None
+    dt = _bar_dt(candle)
+    if dt is None:
+        return False, None
+    flags = event_status(dt)
+    names = [text for flag, text in _CALENDAR_LABELS.items() if flags & flag]
+    blocked = is_entry_blocked(dt, hard_only=bool(cal.get("hard_only", False)))
+    return blocked, (", ".join(names) if names else None)
 
 
 def load_config() -> dict:
@@ -112,17 +136,27 @@ def scan_instrument(qp, cfg: dict, instr: dict):
         is_bull = sig.side == "long"
         note = (" | " + "; ".join(sig.notes)) if sig.notes else ""
         rpp_str = f" ({sig.risk * rpp:.0f} руб)" if rpp else ""
-        log.info("[%s] СКАН сигнал #%d: %s · бар %s · вход=%.2f стоп=%.2f тейк=%.2f риск=%.0f п.%s · ОИ=н/д (история)%s",
+        blocked, cal_label = _calendar_note(cfg, cv4)
+        cal_note = (f" | КАЛЕНДАРЬ: {cal_label} — вход заблокирован" if blocked
+                    else (f" | календарь: {cal_label}" if cal_label else ""))
+        log.info("[%s] СКАН сигнал #%d: %s · бар %s · вход=%.2f стоп=%.2f тейк=%.2f риск=%.0f п.%s · ОИ=н/д (история)%s%s",
                  name, found, sig.side.upper(), chart.fmt_dt(cv4),
-                 sig.entry, sig.stop, sig.target, sig.risk, rpp_str, note)
+                 sig.entry, sig.stop, sig.target, sig.risk, rpp_str, note, cal_note)
         try:
             hint = f"3+1 {sig.side} Вход={sig.entry:.2f} СЛ={sig.stop:.2f} ТП={sig.target:.2f}"
+            if blocked:
+                hint += f" [ЗАБЛОКИРОВАНО: {cal_label}]"
             chart.draw_arrow(qp, tag, arrows, cv4, is_bull, found, hint)
             chart.draw_levels(qp, tag, cv4, sig.entry, sig.stop, sig.target, rpp, sig.side)
+            if blocked:
+                chart.draw_calendar_block(qp, tag, cv4, cal_label or "фильтр", is_bull)
             log.info("[%s]   стрелка нарисована на баре %s", name, chart.fmt_dt(cv4))
         except Exception as e:  # noqa: BLE001
             log.warning("[%s]   стрелку нарисовать не удалось: %r", name, e)
-        execute_signal(cfg, instr, sig, cv4, "scan")
+        if blocked:
+            log.info("[%s]   вход заблокирован календарным фильтром (%s) — сделка не выставляется.", name, cal_label)
+        else:
+            execute_signal(cfg, instr, sig, cv4, "scan")
 
     log.info("[%s] скан завершён: сигналов %d на %d свечах.", name, found, len(candles))
     s = summarize(outcomes)
@@ -386,23 +420,35 @@ def _emit_signal(qp, cfg, st, sig, candle, source, oi_str, on_event=None):
     note = (" | " + "; ".join(sig.notes)) if sig.notes else ""
     drawn = "да"
     rpp = st.get("rpp")
+    is_bull = sig.side == "long"
+    blocked, cal_label = _calendar_note(cfg, candle)
     try:
         hint = f"3+1 {sig.side} Вход={sig.entry:.2f} СЛ={sig.stop:.2f} ТП={sig.target:.2f}"
-        chart.draw_arrow(qp, tag, cfg["arrows"], candle, sig.side == "long", num, hint)
+        if blocked:
+            hint += f" [ЗАБЛОКИРОВАНО: {cal_label}]"
+        chart.draw_arrow(qp, tag, cfg["arrows"], candle, is_bull, num, hint)
         chart.draw_levels(qp, tag, candle, sig.entry, sig.stop, sig.target, rpp, sig.side)
+        if blocked:
+            chart.draw_calendar_block(qp, tag, candle, cal_label or "фильтр", is_bull)
     except Exception as e:  # noqa: BLE001
         drawn = f"нет ({e!r})"
     rpp_str = f" ({sig.risk * rpp:.0f} руб)" if rpp else ""
-    log.info("[%s] %s #%d: %s · бар %s · вход=%.2f стоп=%.2f тейк=%.2f риск=%.0f п.%s · %s · стрелка=%s · режим=%s%s",
+    cal_note = (f" · КАЛЕНДАРЬ: {cal_label} — блок" if blocked
+                else (f" · календарь: {cal_label}" if cal_label else ""))
+    log.info("[%s] %s #%d: %s · бар %s · вход=%.2f стоп=%.2f тейк=%.2f риск=%.0f п.%s · %s · стрелка=%s · режим=%s%s%s",
              name, source.upper(), num, sig.side.upper(), chart.fmt_dt(candle),
-             sig.entry, sig.stop, sig.target, sig.risk, rpp_str, oi_str, drawn, cfg.get("mode"), note)
-    execute_signal(cfg, instr, sig, candle, source)
+             sig.entry, sig.stop, sig.target, sig.risk, rpp_str, oi_str, drawn, cfg.get("mode"), note, cal_note)
+    if blocked:
+        log.info("[%s]   вход заблокирован календарным фильтром (%s) — сделка не выставляется.", name, cal_label)
+    else:
+        execute_signal(cfg, instr, sig, candle, source)
     if on_event:
         on_event("signal", {"instrument": name, "source": source, "num": num,
                             "side": sig.side, "bar": chart.fmt_dt(candle),
                             "entry": sig.entry, "stop": sig.stop, "target": sig.target,
                             "risk": sig.risk, "oi": oi_str, "drawn": drawn,
-                            "mode": cfg.get("mode"), "notes": list(sig.notes)})
+                            "mode": cfg.get("mode"), "notes": list(sig.notes),
+                            "calendar_blocked": blocked, "calendar_label": cal_label})
 
 
 def _process_bars(qp, cfg, st, initial, on_event=None):

@@ -101,6 +101,20 @@ def draw_arrow(qp, tag: str, cfg_arrows: dict, candle: dict, is_bull: bool,
                font_name="Arial", font_height=12)
 
 
+def draw_calendar_block(qp, tag: str, candle: dict, label: str, is_bull: bool):
+    """Метка «вход заблокирован календарным фильтром» — на стороне, противоположной
+    стрелке сигнала (чтобы не перекрывались): для лонга снизу, для шорта сверху."""
+    dn, tn = cv_date_time(candle)
+    if is_bull:
+        ypos, align = float(candle["low"]), "BOTTOM"
+    else:
+        ypos, align = float(candle["high"]), "TOP"
+    text = f"ФИЛЬТР: {label}"
+    _add_label(qp, tag, ypos, dn, tn, text=text, alignment=align, hint=text,
+               r=255, g=140, b=0, transparency=0, trans_bg=1,
+               font_name="Arial", font_height=10)
+
+
 def draw_levels(qp, tag: str, candle: dict, entry: float, stop: float, tp: float,
                 rub_per_point=None, side=None):
     """Горизонтальные подписи вход/стоп/тейк цветом. Если rub_per_point задан — добавляем P&L."""
