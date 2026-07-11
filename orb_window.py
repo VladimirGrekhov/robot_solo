@@ -17,15 +17,52 @@ import logging
 import queue
 import sys
 import threading
-import tkinter as tk
+import traceback
 from pathlib import Path
-from tkinter import messagebox, ttk
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import orb_backtest
-import orb_journal
-import orb_risk
-import orb_robot as R
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+_CRASH_LOG = HERE / "logs" / "orb_window_crash.log"
+
+
+def _fatal_startup_error(title: str, detail: str) -> None:
+    """Пишет причину падения на старте и в консоль, и в logs/orb_window_crash.log —
+    чтобы окно не закрывалось молча без единой видимой строки."""
+    _CRASH_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+        f.write(f"\n=== {title} ===\n{detail}\n")
+    print(f"[ОШИБКА СТАРТА] {title}", file=sys.stderr)
+    print(detail, file=sys.stderr)
+    print(f"\nПодробности дописаны в {_CRASH_LOG}", file=sys.stderr)
+
+
+try:
+    import tkinter as tk
+    from tkinter import messagebox, ttk
+except Exception as e:  # noqa: BLE001
+    _fatal_startup_error(
+        "tkinter недоступен",
+        "На Windows-установке python.org tkinter идёт «из коробки» — переустанови "
+        "Python с сайта python.org (галка 'tcl/tk and IDLE' должна быть включена).\n"
+        f"Исходная ошибка: {e!r}\n{traceback.format_exc()}")
+    input("Нажми Enter, чтобы закрыть окно консоли...")
+    sys.exit(1)
+
+try:
+    import orb_journal
+    import orb_risk
+    import orb_robot as R
+except Exception as e:  # noqa: BLE001
+    _fatal_startup_error(
+        "не удалось импортировать модули робота",
+        "Проверь, что рядом с orb_window.py лежат orb_robot.py/orb_journal.py/orb_risk.py/"
+        "config_orb.yaml, и что установлен пакет pyyaml (pip install pyyaml).\n"
+        f"Исходная ошибка: {e!r}\n{traceback.format_exc()}")
+    input("Нажми Enter, чтобы закрыть окно консоли...")
+    sys.exit(1)
+
+log = logging.getLogger("orb_window")
 
 # --- тёмная палитра (как в прежнем окне «3+1») ----------------------------------
 BG = "#1e1e26"
@@ -347,6 +384,15 @@ class App(tk.Tk):
 
     def _run_backtest_worker(self):
         try:
+            import orb_backtest  # ленивый импорт: тянет pandas/requests, нужен только тут
+        except Exception as e:  # noqa: BLE001
+            log.error("import orb_backtest не удался: %r", e, exc_info=True)
+            self.q.put(("backtest_done", {"ok": False, "lines": [
+                "Не установлены зависимости бэктеста.",
+                "Выполни: pip install pandas requests pyarrow",
+                f"Исходная ошибка: {e!r}"]}))
+            return
+        try:
             bt_cfg = self.cfg.get("backtest", {})
             strat_cfg = self.cfg.get("strategy", {})
             risk_cfg = orb_risk.RiskConfig(**self.cfg.get("risk", {})) if self.cfg.get("risk") else orb_risk.RiskConfig()
@@ -624,15 +670,55 @@ class App(tk.Tk):
         self.after(200, self.destroy)
 
 
+def _setup_bootstrap_logging() -> None:
+    """Лог ДО чтения конфига (setup_logging(cfg) читает cfg['paths']['log_dir'],
+    а на этом этапе конфиг мог ещё не загрузиться) — пишем в logs/orb_window.log
+    рядом со скриптом плюс дублируем в консоль, чтобы было видно, где застряло."""
+    log_dir = HERE / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    log.setLevel(logging.DEBUG)
+    log.handlers.clear()
+    for h in (logging.StreamHandler(),
+              logging.FileHandler(log_dir / "orb_window.log", encoding="utf-8")):
+        h.setFormatter(fmt)
+        log.addHandler(h)
+    log.info("orb_window: старт. Python %s, файл %s, рабочая папка %s",
+             sys.version.split()[0], __file__, HERE)
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
-    cfg = R.load_config()
-    R.setup_logging(cfg)
-    app = App(cfg)
-    app.mainloop()
+
+    _setup_bootstrap_logging()
+    try:
+        log.info("Читаю config_orb.yaml…")
+        cfg = R.load_config()
+        log.info("Конфиг прочитан: mode=%s live_trading=%s chart_tag=%s",
+                 cfg.get("mode"), cfg.get("live_trading"), cfg.get("chart_tag"))
+
+        log.info("Настраиваю логирование движка (logs/orb_robot.log)…")
+        R.setup_logging(cfg)
+
+        log.info("Строю окно…")
+        app = App(cfg)
+        log.info("Окно построено, запускаю mainloop.")
+        app.mainloop()
+        log.info("Окно закрыто штатно.")
+    except Exception as e:  # noqa: BLE001
+        detail = traceback.format_exc()
+        log.error("НЕОБРАБОТАННАЯ ОШИБКА: %r\n%s", e, detail)
+        _fatal_startup_error("необработанная ошибка при запуске окна", detail)
+        try:
+            messagebox.showerror("orb_window — ошибка запуска",
+                                  f"{e!r}\n\nПодробности: logs/orb_window.log и\n{_CRASH_LOG}")
+        except Exception:
+            pass
+        input("Нажми Enter, чтобы закрыть окно консоли...")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

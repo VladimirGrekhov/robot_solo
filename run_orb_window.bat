@@ -3,6 +3,9 @@ rem ============================================================
 rem  Launcher: orb_window.py — окно робота (вкладки Робот/Лог/
 rem  Настройки/Бэктест/Аналитика/Счёт). Старт в окне запускает
 rem  paper или live в зависимости от выбора на вкладке «Настройки».
+rem
+rem  Если окно не открылось — смотри logs\orb_window.log и
+rem  logs\orb_window_crash.log (создаются рядом с этим файлом).
 rem ============================================================
 setlocal
 cd /d "%~dp0"
@@ -17,12 +20,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo Running: %PY% orb_window.py
+echo (лог старта: logs\orb_window.log)
+echo.
 %PY% orb_window.py
 set "RC=%ERRORLEVEL%"
 
-if not "%RC%"=="0" (
-    echo.
-    echo --- Finished (exit code %RC%) ---
-    pause
-)
+echo.
+echo --- Finished (exit code %RC%) ---
+pause
 endlocal
