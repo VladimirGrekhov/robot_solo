@@ -87,6 +87,12 @@ def _is_expiration(d: date) -> bool:
     return d in _expirations_for_year(d.year)
 
 
+def expiration_dates(year: int) -> tuple[date, ...]:
+    """Публичная обёртка над _expirations_for_year: даты экспирации квартального
+    Si (третий четверг мар/июн/сен/дек) за календарный год."""
+    return _expirations_for_year(year)
+
+
 def _add_trading_days(d: date, n: int) -> date:
     """Сдвигает дату на n торговых дней (пн-пт). MOEX-праздники не учитываются
     (только календарь expiration_adj-зоны — см. ограничение в README)."""
@@ -98,6 +104,11 @@ def _add_trading_days(d: date, n: int) -> date:
         if cur.weekday() < 5:
             remaining -= 1
     return cur
+
+
+def trading_day_offset(d: date, n: int) -> date:
+    """Публичная обёртка над _add_trading_days: дата +/- n торговых дней (пн-пт)."""
+    return _add_trading_days(d, n)
 
 
 @lru_cache(maxsize=None)

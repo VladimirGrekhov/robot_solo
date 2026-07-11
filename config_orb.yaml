@@ -1,0 +1,60 @@
+# config_orb.yaml — конфиг робота ORB (Opening Range Breakout), Si M15.
+#
+# mode: backtest | paper | live
+#   backtest — прогон на истории MOEX ISS, реального QUIK не требует;
+#   paper    — живые данные из QUIK, заявки НЕ выставляются (только журнал) — режим по умолчанию;
+#   live     — реальные заявки. Включается ТОЛЬКО live_trading: true + подтверждение "yes" при старте.
+mode: paper
+live_trading: false
+
+# слот QuikPy — свободный (см. README: 34140/34141 занят «3+1»-роботом, 34142/34143 свободен)
+slot:
+  host: 127.0.0.1
+  requests_port: 34142
+  callbacks_port: 34143
+  connect_timeout_seconds: 6
+  request_timeout_seconds: 5
+  quik_py_dir: null
+
+class_code: SPBFUT
+# ACCOUNT для транзакций (обязателен для live, для paper/backtest не используется) —
+# формат зависит от брокера, обычно вида "NNNNNN" или "NUC123-000...".
+account: ""
+client_code: ""
+
+# M15-график ЭТОГО инструмента должен быть открыт в QUIK с этим тегом (см. checklist в README);
+# контракт, который туда нужно поставить, робот печатает в лог при старте (orb_calendar.active_contract).
+chart_tag: si15m
+tick_size: 1.0
+
+timeframe_minutes: 15
+bar_close_delay_seconds: 7
+
+risk:
+  risk_per_trade: 0.01
+  go_fraction: 0.30
+  max_stop_pt: 600.0
+  daily_loss_limit: 0.02
+  weekly_halt_limit: 0.05
+
+# депозит для расчёта размера позиции. В paper/live — задай вручную (сверяй со своим счётом,
+# живой eq пока не читается для сайзинга); в backtest — фиксированное допущение на весь период.
+deposit_rub: 300000.0
+
+backtest:
+  date_from: "2025-07-11"
+  date_till: "2026-07-10"
+  cache_dir: "data_cache/moex_m15"
+  deposit_rub: 300000.0
+  rub_per_point: 1.0            # Si: 1 пункт = 1 ₽ (фикс.)
+  go_per_contract_assumed: 12000.0   # ПРЕДПОЛОЖЕНИЕ — реальное ГО плавает, см. README
+  commission_per_side_rub: 5.0
+  slippage_ticks: 2
+
+paths:
+  trades_csv: logs/orb_trades.csv
+  skips_csv: logs/orb_skips.csv
+  risk_state_json: logs/orb_risk_state.json
+  log_dir: logs
+
+kill_switch_dir: "."   # наличие файла STOP в этой директории -> немедленная остановка

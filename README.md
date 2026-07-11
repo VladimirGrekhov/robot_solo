@@ -61,6 +61,7 @@ analyze.py          — метрики: ожидание, винрейт, руб
 chart.py            — рисование стрелок/уровней через addLabel2 (фолбэк BUY/SELL текстом)
 config.json         — слот 34140/34141, один инструмент Si, блок стратегии (вкл. тренд-фильтр)
 event_calendar.py   — календарь событий РФ (ЦБ/CPI/клиринг/экспирация), см. EVENT_CALENDAR.md
+orb_robot.py        — второй робот: стратегия ORB (пробой утреннего диапазона), см. ORB_README.md
 run_window.bat      — запуск GUI
 run_scan.bat        — разовый скан
 logs/               — логи в UTF-8
