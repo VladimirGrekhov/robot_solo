@@ -121,6 +121,9 @@ class App(tk.Tk):
         self._log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         R.log.addHandler(self._log_handler)
         R.log.setLevel(logging.INFO)
+        # тот же обработчик — на логгер самого окна (бэктест по графику QUIK, ошибки
+        # импорта и т.п. пишутся через orb_window.log, а не только через orb_robot.log)
+        log.addHandler(self._log_handler)
 
         self.after(self.POLL_MS, self._poll)
 
@@ -393,10 +396,11 @@ class App(tk.Tk):
         threading.Thread(target=self._run_backtest_worker, daemon=True).start()
 
     def _run_backtest_worker(self):
+        log.info("Бэктест (MOEX ISS): старт.")
         try:
             import orb_backtest  # ленивый импорт: тянет pandas/requests, нужен только тут
         except Exception as e:  # noqa: BLE001
-            log.error("import orb_backtest не удался: %r", e, exc_info=True)
+            log.error("Бэктест (MOEX ISS): import orb_backtest не удался: %r", e, exc_info=True)
             self.q.put(("backtest_done", {"ok": False, "lines": [
                 "Не установлены зависимости бэктеста.",
                 "Выполни: pip install pandas requests pyarrow",
@@ -404,6 +408,9 @@ class App(tk.Tk):
             return
         try:
             bt_cfg = self.cfg.get("backtest", {})
+            log.info("Бэктест (MOEX ISS): период %s → %s, кэш %s — гружу/считаю (может занять время при"
+                     " первом прогоне без кэша)…", bt_cfg.get("date_from"), bt_cfg.get("date_till"),
+                     bt_cfg.get("cache_dir", "data_cache/moex_m15"))
             strat_cfg = self.cfg.get("strategy", {})
             risk_cfg = orb_risk.RiskConfig(**self.cfg.get("risk", {})) if self.cfg.get("risk") else orb_risk.RiskConfig()
             from datetime import date as _date
@@ -422,9 +429,11 @@ class App(tk.Tk):
                 expiration_zone_mode=strat_cfg.get("expiration_zone_mode", "trading_days"),
             )
             res = orb_backtest.run(b)
+            log.info("Бэктест (MOEX ISS): готово, сделок=%d.", res.summary["trades"])
             lines = [f"Сделок: {res.summary['trades']}"] + orb_journal.summary_lines(res.summary)
             self.q.put(("backtest_done", {"ok": True, "lines": lines}))
         except Exception as e:  # noqa: BLE001
+            log.error("Бэктест (MOEX ISS): упал: %r", e, exc_info=True)
             self.q.put(("backtest_done", {"ok": False, "lines": [f"Ошибка: {e!r}"]}))
 
     # --- вкладка «Бэктест (QUIK)» ---------------------------------------------------
@@ -465,10 +474,11 @@ class App(tk.Tk):
         self._btq_worker.start()
 
     def _run_backtest_quik_worker(self):
+        log.info("Бэктест (QUIK): старт.")
         try:
             import orb_backtest  # ленивый импорт: тянет pandas/requests, нужен только тут
         except Exception as e:  # noqa: BLE001
-            log.error("import orb_backtest не удался: %r", e, exc_info=True)
+            log.error("Бэктест (QUIK): import orb_backtest не удался: %r", e, exc_info=True)
             self.q.put(("backtest_quik_done", {"ok": False, "lines": [
                 "Не установлены зависимости бэктеста.",
                 "Выполни: pip install pandas requests pyarrow",
@@ -477,17 +487,22 @@ class App(tk.Tk):
 
         qp = None
         try:
+            log.info("Бэктест (QUIK): подключаюсь к QUIK…")
             qp = R.connect_quik(self.cfg)
             if qp is None:
+                log.error("Бэктест (QUIK): подключение не удалось (терминал запущен? slot верный?).")
                 self.q.put(("backtest_quik_done", {"ok": False,
                                                     "lines": ["Нет подключения к QUIK — терминал запущен?"]}))
                 return
 
             tag = self.cfg["chart_tag"]
+            log.info("Бэктест (QUIK): подключился. Читаю свечи с графика '%s'…", tag)
             candles = R._load_recent(qp, tag, want=None)
             closed = candles[:-1] if candles else []  # последний бар ещё формируется
             bars = [b for c in closed if (b := R._to_bar(c)) is not None]
+            log.info("Бэктест (QUIK): получено баров: %d (закрытых: %d).", len(candles), len(bars))
             if not bars:
+                log.error("Бэктест (QUIK): на графике '%s' нет закрытых баров.", tag)
                 self.q.put(("backtest_quik_done", {"ok": False, "lines": [
                     f"На графике с тегом '{tag}' нет закрытых баров. Открыт ли нужный график в QUIK?"]}))
                 return
@@ -499,6 +514,8 @@ class App(tk.Tk):
             fallback_go = self.cfg.get("backtest", {}).get("go_per_contract_assumed", 12000.0)
             rpp = R._rub_per_point(qp, cls, sec, tick) or 1.0
             go = R._read_go(qp, cls, sec) or fallback_go
+            log.info("Бэктест (QUIK): контракт=%s стоимость_пункта=%.2f ГО=%.0f — считаю…",
+                     sec, rpp, go)
 
             strat_cfg = self.cfg.get("strategy", {})
             risk_cfg = orb_risk.RiskConfig(**self.cfg.get("risk", {})) if self.cfg.get("risk") else orb_risk.RiskConfig()
@@ -512,6 +529,7 @@ class App(tk.Tk):
                 expiration_zone_mode=strat_cfg.get("expiration_zone_mode", "trading_days"),
             )
             res = orb_backtest.run(b, bars=bars)
+            log.info("Бэктест (QUIK): готово, сделок=%d.", res.summary["trades"])
             lines = [
                 f"Контракт (предположительно): {sec} · тег графика '{tag}'",
                 f"Баров: {len(bars)} ({bars[0].dt:%Y-%m-%d %H:%M} → {bars[-1].dt:%Y-%m-%d %H:%M})",
@@ -520,7 +538,7 @@ class App(tk.Tk):
             ] + orb_journal.summary_lines(res.summary)
             self.q.put(("backtest_quik_done", {"ok": True, "lines": lines}))
         except Exception as e:  # noqa: BLE001
-            log.error("бэктест по графику QUIK упал: %r", e, exc_info=True)
+            log.error("Бэктест (QUIK): упал: %r", e, exc_info=True)
             self.q.put(("backtest_quik_done", {"ok": False, "lines": [f"Ошибка: {e!r}"]}))
         finally:
             if qp is not None:
@@ -528,6 +546,7 @@ class App(tk.Tk):
                     qp.close_connection_and_thread()
                 except Exception:
                     pass
+            log.info("Бэктест (QUIK): подключение закрыто.")
 
     # --- вкладка «Аналитика» — сводка по logs/orb_trades.csv/orb_skips.csv --------
     def _build_analytics(self, parent):
