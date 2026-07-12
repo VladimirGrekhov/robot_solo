@@ -1,4 +1,6 @@
 @echo off
+chcp 65001 >nul
+rem (chcp 65001 — консоль в UTF-8, иначе кириллица в этом файле может ломать разбор команд)
 rem ============================================================
 rem  Launcher: orb_robot.py --mode live
 rem  РЕАЛЬНЫЕ ЗАЯВКИ. Требует live_trading: true в config_orb.yaml
