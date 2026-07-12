@@ -1,6 +1,11 @@
 # Обязательно для orb_robot.py / orb_window.py (paper/live и настройки):
 pyyaml
 
+# Обязательно на Windows (zoneinfo/ZoneInfo("Europe/Moscow") в event_calendar.py
+# без этого пакета не находит базу часовых поясов — на Linux/Mac обычно не нужен,
+# но ставить его лишним не будет):
+tzdata
+
 # Только для режима backtest (вкладка «Бэктест» в окне, orb_backtest.py/orb_data_moex.py):
 pandas
 requests
