@@ -11,8 +11,8 @@ live_trading: false
 # через QuikPy на этом же терминале, у каждого процесса должны быть свои порты
 slot:
   host: 127.0.0.1
-  requests_port: 34142
-  callbacks_port: 34143
+  requests_port: 34140
+  callbacks_port: 34141
   connect_timeout_seconds: 6
   request_timeout_seconds: 5
   quik_py_dir: null
