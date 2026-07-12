@@ -53,10 +53,16 @@ class BacktestResult:
 
 def save_result(cfg: BacktestConfig, res: BacktestResult, source: str,
                  trades_path, runs_path, bars_count: int,
-                 date_from: str | None = None, date_till: str | None = None) -> None:
+                 date_from: str | None = None, date_till: str | None = None) -> dict:
     """Сохраняет статистику прогона: сделки — перезаписью (только последний прогон),
-    строку итогов — дозаписью в историю прогонов. source: "moex_iss" | "quik_chart"."""
+    строку итогов — дозаписью в историю прогонов. source: "moex_iss" | "quik_chart".
+
+    Возвращает period_summary (итог за период в ₽/%, среднее в месяц, помесячная
+    разбивка) — вызывающий код может вывести его через orb_journal.period_lines."""
     orb_journal.write_backtest_trades(trades_path, res.trades)
+    d_from = date.fromisoformat(date_from) if date_from else cfg.date_from
+    d_till = date.fromisoformat(date_till) if date_till else cfg.date_till
+    period = orb_journal.period_summary(res.trades, cfg.deposit_rub, d_from, d_till)
     params = {
         "deposit_rub": cfg.deposit_rub,
         "commission_per_side_rub": cfg.commission_per_side_rub,
@@ -71,9 +77,9 @@ def save_result(cfg: BacktestConfig, res: BacktestResult, source: str,
     }
     orb_journal.append_backtest_run(
         runs_path, source=source, params=params, summary=res.summary,
-        date_from=date_from or cfg.date_from.isoformat(),
-        date_till=date_till or cfg.date_till.isoformat(),
-        bars=bars_count)
+        date_from=d_from.isoformat(), date_till=d_till.isoformat(),
+        bars=bars_count, period=period)
+    return period
 
 
 def contract_segments(date_from: date, date_till: date) -> list[tuple[str, date, date]]:

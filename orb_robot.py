@@ -496,8 +496,10 @@ def main() -> None:
         paths = cfg.get("paths", {})
         trades_path = HERE / paths.get("backtest_trades_csv", "logs/orb_backtest_trades.csv")
         runs_path = HERE / paths.get("backtest_runs_csv", "logs/orb_backtest_runs.csv")
-        orb_backtest.save_result(b, res, source="moex_iss", trades_path=trades_path,
-                                  runs_path=runs_path, bars_count=len(bars))
+        period = orb_backtest.save_result(b, res, source="moex_iss", trades_path=trades_path,
+                                           runs_path=runs_path, bars_count=len(bars))
+        for line in orb_journal.period_lines(res.summary, period):
+            log.info(line)
         log.info("Сделки прогона: %s · история прогонов: %s", trades_path, runs_path)
     elif mode == "paper":
         run_paper_or_live(cfg, live=False)

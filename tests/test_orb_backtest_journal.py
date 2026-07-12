@@ -45,6 +45,58 @@ def test_append_backtest_run_accumulates(tmp_path):
     assert rows[1]["bars"] == "900"
 
 
+def test_daily_summary_exposes_gross_sums():
+    s = j.daily_summary([_trade(100), _trade(200), _trade(-50)], [])
+    assert s["gross_profit_rub"] == 300
+    assert s["gross_loss_rub"] == 50
+    assert abs(s["profit_factor"] - 6.0) < 1e-9
+
+
+def test_period_summary_monthly_and_averages():
+    trades = [
+        j.TradeRecord(datetime(2026, 1, 10, 11, 0), datetime(2026, 1, 10, 12, 0),
+                       "long", 1, 100, 200, 90, 100, 1000.0, "eod", 5.0, ""),
+        j.TradeRecord(datetime(2026, 1, 20, 11, 0), datetime(2026, 1, 20, 12, 0),
+                       "long", 1, 100, 150, 90, 50, 500.0, "eod", 5.0, ""),
+        j.TradeRecord(datetime(2026, 3, 5, 11, 0), datetime(2026, 3, 5, 12, 0),
+                       "short", 1, 100, 130, 110, -30, -300.0, "stop", 5.0, ""),
+    ]
+    ps = j.period_summary(trades, deposit_rub=100_000.0,
+                           date_from=date(2026, 1, 1), date_till=date(2026, 3, 31))
+    assert ps["total_pnl_rub"] == 1200.0
+    assert abs(ps["total_pct"] - 1.2) < 1e-9            # 1200 / 100000 * 100
+    assert 2.9 < ps["period_months"] < 3.1              # ~3 календарных месяца
+    assert abs(ps["avg_month_rub"] - 1200.0 / ps["period_months"]) < 1e-9
+    # помесячная разбивка: январь двумя сделками, февраль отсутствует, март убыточный
+    assert ps["monthly"] == [
+        ("2026-01", 1500.0, 1.5),
+        ("2026-03", -300.0, -0.3),
+    ]
+
+
+def test_period_lines_render():
+    s = j.daily_summary([_trade(100), _trade(-50)], [])
+    ps = j.period_summary([_trade(100), _trade(-50)], 100_000.0,
+                           date(2026, 3, 1), date(2026, 3, 31))
+    lines = j.period_lines(s, ps)
+    assert any("сумма прибыльных" in line for line in lines)
+    assert any("в среднем за месяц" in line for line in lines)
+    assert any("2026-03" in line for line in lines)
+
+
+def test_append_backtest_run_rotates_old_header(tmp_path):
+    path = tmp_path / "runs.csv"
+    path.write_text("old,columns\n1,2\n", encoding="utf-8")
+    summary = j.daily_summary([_trade()], [])
+    j.append_backtest_run(path, "moex_iss", {}, summary, "2026-01-01", "2026-01-31", 100)
+    # старый файл отложен в .bak, новый начат с правильным заголовком
+    assert (tmp_path / "runs.csv.bak").is_file()
+    with open(path, encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["source"] == "moex_iss"
+
+
 def test_save_result_writes_both_files(tmp_path):
     cfg = bt.BacktestConfig(date_from=date(2026, 3, 11), date_till=date(2026, 3, 11),
                              cache_dir=tmp_path)

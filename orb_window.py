@@ -440,11 +440,12 @@ class App(tk.Tk):
             res = orb_backtest.run(b, bars=bars)
             log.info("Бэктест (MOEX ISS): готово, сделок=%d.", res.summary["trades"])
             trades_path, runs_path = self._backtest_paths()
-            orb_backtest.save_result(b, res, source="moex_iss", trades_path=trades_path,
-                                      runs_path=runs_path, bars_count=len(bars))
+            period = orb_backtest.save_result(b, res, source="moex_iss", trades_path=trades_path,
+                                               runs_path=runs_path, bars_count=len(bars))
             log.info("Бэктест (MOEX ISS): сделки прогона -> %s · история прогонов -> %s",
                      trades_path, runs_path)
             lines = ([f"Сделок: {res.summary['trades']}"] + orb_journal.summary_lines(res.summary)
+                     + orb_journal.period_lines(res.summary, period)
                      + ["", f"Сделки прогона: {trades_path}", f"История прогонов: {runs_path}"])
             self.q.put(("backtest_done", {"ok": True, "lines": lines}))
         except Exception as e:  # noqa: BLE001
@@ -546,7 +547,7 @@ class App(tk.Tk):
             res = orb_backtest.run(b, bars=bars)
             log.info("Бэктест (QUIK): готово, сделок=%d.", res.summary["trades"])
             trades_path, runs_path = self._backtest_paths()
-            orb_backtest.save_result(
+            period = orb_backtest.save_result(
                 b, res, source="quik_chart", trades_path=trades_path, runs_path=runs_path,
                 bars_count=len(bars),
                 date_from=bars[0].dt.date().isoformat(), date_till=bars[-1].dt.date().isoformat())
@@ -557,7 +558,7 @@ class App(tk.Tk):
                 f"Баров: {len(bars)} ({bars[0].dt:%Y-%m-%d %H:%M} → {bars[-1].dt:%Y-%m-%d %H:%M})",
                 f"Стоимость пункта: {rpp:.2f} ₽ · ГО: {go:.0f} ₽ (текущие значения из QUIK, не исторические)",
                 f"Сделок: {res.summary['trades']}",
-            ] + orb_journal.summary_lines(res.summary) + [
+            ] + orb_journal.summary_lines(res.summary) + orb_journal.period_lines(res.summary, period) + [
                 "", f"Сделки прогона: {trades_path}", f"История прогонов: {runs_path}"]
             self.q.put(("backtest_quik_done", {"ok": True, "lines": lines}))
         except Exception as e:  # noqa: BLE001
