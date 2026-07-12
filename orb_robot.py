@@ -488,10 +488,17 @@ def main() -> None:
             allow_position_flip=bool(strat_cfg.get("allow_position_flip", False)),
             expiration_zone_mode=strat_cfg.get("expiration_zone_mode", "trading_days"),
         )
-        res = orb_backtest.run(b)
+        bars = orb_backtest.load_bars(b)
+        res = orb_backtest.run(b, bars=bars)
         log.info("Бэктест завершён: %s", res.summary)
         for line in orb_journal.summary_lines(res.summary):
             log.info(line)
+        paths = cfg.get("paths", {})
+        trades_path = HERE / paths.get("backtest_trades_csv", "logs/orb_backtest_trades.csv")
+        runs_path = HERE / paths.get("backtest_runs_csv", "logs/orb_backtest_runs.csv")
+        orb_backtest.save_result(b, res, source="moex_iss", trades_path=trades_path,
+                                  runs_path=runs_path, bars_count=len(bars))
+        log.info("Сделки прогона: %s · история прогонов: %s", trades_path, runs_path)
     elif mode == "paper":
         run_paper_or_live(cfg, live=False)
     elif mode == "live":

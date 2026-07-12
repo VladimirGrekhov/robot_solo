@@ -4,6 +4,12 @@ orb_journal.py — журнал сделок и пропущенных сигн�
 Каждая сделка (paper и live одинаково) — строка в trades.csv. Каждый пропуск
 сигнала (blocked_cbr/blocked_cpi/blocked_clearing/blocked_expiration_adj/
 range_too_wide/already_traded/daily_limit/halted/kill_switch) — строка в skips.csv.
+
+Для бэктестов — два отдельных файла:
+  - backtest_trades.csv — сделки ПОСЛЕДНЕГО прогона (перезаписывается каждый раз);
+  - backtest_runs.csv — история прогонов, по строке на запуск (накапливается):
+    когда/чем/с какими параметрами запускали и что получили — чтобы сравнивать
+    результаты при разных настройках, не переписывая цифры вручную.
 """
 
 from __future__ import annotations
@@ -17,6 +23,15 @@ from pathlib import Path
 TRADE_FIELDS = ["datetime_in", "datetime_out", "dir", "qty", "entry", "exit", "stop",
                 "pnl_pt", "pnl_rub", "exit_reason", "range_width_pt", "event_flags"]
 SKIP_FIELDS = ["datetime", "side", "reason"]
+BACKTEST_RUN_FIELDS = [
+    "run_datetime", "source",                      # когда прогнали и на чём (moex_iss | quik_chart)
+    "date_from", "date_till", "bars",              # период/объём данных
+    "deposit_rub", "commission_per_side_rub", "slippage_ticks",
+    "risk_per_trade", "go_fraction", "max_stop_pt", "daily_loss_limit", "weekly_halt_limit",
+    "allow_position_flip", "expiration_zone_mode",
+    "trades", "wins", "losses", "winrate", "profit_factor", "sum_pnl_rub", "avg_pnl_rub",
+    "skip_counts",                                  # напр. "range_too_wide=145, blocked_cbr=2"
+]
 
 
 @dataclass(frozen=True)
@@ -60,6 +75,52 @@ def append_skip(path: Path, dt: datetime, side: str, reason: str) -> None:
     """reason — один из: blocked_cbr, blocked_cpi, blocked_clearing,
     blocked_expiration_adj, range_too_wide, already_traded, daily_limit, halted, kill_switch."""
     _append_row(path, SKIP_FIELDS, {"datetime": dt.isoformat(sep=" "), "side": side, "reason": reason})
+
+
+def write_backtest_trades(path: Path, trades: list[TradeRecord]) -> None:
+    """Пишет сделки бэктеста с нуля (перезапись файла): в файле — только последний прогон."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=TRADE_FIELDS)
+        w.writeheader()
+        for t in trades:
+            w.writerow(t.as_row())
+
+
+def append_backtest_run(path: Path, source: str, params: dict, summary: dict,
+                         date_from: str, date_till: str, bars: int) -> None:
+    """Дописывает строку истории прогонов бэктеста (файл накапливается).
+
+    source — "moex_iss" | "quik_chart"; params — расплющенные параметры прогона
+    (deposit_rub, комиссия/слиппедж, риск-настройки, переключатели стратегии)."""
+    skip_str = ", ".join(f"{r}={c}" for r, c in sorted(summary.get("skip_counts", {}).items()))
+    row = {
+        "run_datetime": datetime.now().isoformat(sep=" ", timespec="seconds"),
+        "source": source,
+        "date_from": date_from,
+        "date_till": date_till,
+        "bars": bars,
+        "deposit_rub": params.get("deposit_rub"),
+        "commission_per_side_rub": params.get("commission_per_side_rub"),
+        "slippage_ticks": params.get("slippage_ticks"),
+        "risk_per_trade": params.get("risk_per_trade"),
+        "go_fraction": params.get("go_fraction"),
+        "max_stop_pt": params.get("max_stop_pt"),
+        "daily_loss_limit": params.get("daily_loss_limit"),
+        "weekly_halt_limit": params.get("weekly_halt_limit"),
+        "allow_position_flip": params.get("allow_position_flip"),
+        "expiration_zone_mode": params.get("expiration_zone_mode"),
+        "trades": summary["trades"],
+        "wins": summary["wins"],
+        "losses": summary["losses"],
+        "winrate": f"{summary['winrate']:.1f}",
+        "profit_factor": f"{summary['profit_factor']:.3f}",
+        "sum_pnl_rub": f"{summary['sum_pnl_rub']:.2f}",
+        "avg_pnl_rub": f"{summary['avg_pnl_rub']:.2f}",
+        "skip_counts": skip_str,
+    }
+    _append_row(path, BACKTEST_RUN_FIELDS, row)
 
 
 def daily_summary(trades: list[TradeRecord], skip_reasons: list[str]) -> dict:

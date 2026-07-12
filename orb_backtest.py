@@ -51,6 +51,31 @@ class BacktestResult:
     summary: dict
 
 
+def save_result(cfg: BacktestConfig, res: BacktestResult, source: str,
+                 trades_path, runs_path, bars_count: int,
+                 date_from: str | None = None, date_till: str | None = None) -> None:
+    """Сохраняет статистику прогона: сделки — перезаписью (только последний прогон),
+    строку итогов — дозаписью в историю прогонов. source: "moex_iss" | "quik_chart"."""
+    orb_journal.write_backtest_trades(trades_path, res.trades)
+    params = {
+        "deposit_rub": cfg.deposit_rub,
+        "commission_per_side_rub": cfg.commission_per_side_rub,
+        "slippage_ticks": cfg.slippage_ticks,
+        "risk_per_trade": cfg.risk.risk_per_trade,
+        "go_fraction": cfg.risk.go_fraction,
+        "max_stop_pt": cfg.risk.max_stop_pt,
+        "daily_loss_limit": cfg.risk.daily_loss_limit,
+        "weekly_halt_limit": cfg.risk.weekly_halt_limit,
+        "allow_position_flip": cfg.allow_position_flip,
+        "expiration_zone_mode": cfg.expiration_zone_mode,
+    }
+    orb_journal.append_backtest_run(
+        runs_path, source=source, params=params, summary=res.summary,
+        date_from=date_from or cfg.date_from.isoformat(),
+        date_till=date_till or cfg.date_till.isoformat(),
+        bars=bars_count)
+
+
 def contract_segments(date_from: date, date_till: date) -> list[tuple[str, date, date]]:
     """(тикер, начало, конец) — непересекающиеся отрезки активности контрактов."""
     segments: list[tuple[str, date, date]] = []

@@ -391,6 +391,13 @@ class App(tk.Tk):
         self.bt_text.pack(fill="both", expand=True, padx=8, pady=8)
         self.bt_text.configure(state="disabled")
 
+    def _backtest_paths(self):
+        """(файл сделок последнего прогона, файл истории прогонов) из config.paths."""
+        paths = self.cfg.get("paths", {})
+        trades = HERE / paths.get("backtest_trades_csv", "logs/orb_backtest_trades.csv")
+        runs = HERE / paths.get("backtest_runs_csv", "logs/orb_backtest_runs.csv")
+        return trades, runs
+
     def _run_backtest(self):
         self.bt_btn.config(state="disabled")
         self.bt_status.config(text="считаю…", fg=YELLOW)
@@ -429,9 +436,16 @@ class App(tk.Tk):
                 allow_position_flip=bool(strat_cfg.get("allow_position_flip", False)),
                 expiration_zone_mode=strat_cfg.get("expiration_zone_mode", "trading_days"),
             )
-            res = orb_backtest.run(b)
+            bars = orb_backtest.load_bars(b)
+            res = orb_backtest.run(b, bars=bars)
             log.info("Бэктест (MOEX ISS): готово, сделок=%d.", res.summary["trades"])
-            lines = [f"Сделок: {res.summary['trades']}"] + orb_journal.summary_lines(res.summary)
+            trades_path, runs_path = self._backtest_paths()
+            orb_backtest.save_result(b, res, source="moex_iss", trades_path=trades_path,
+                                      runs_path=runs_path, bars_count=len(bars))
+            log.info("Бэктест (MOEX ISS): сделки прогона -> %s · история прогонов -> %s",
+                     trades_path, runs_path)
+            lines = ([f"Сделок: {res.summary['trades']}"] + orb_journal.summary_lines(res.summary)
+                     + ["", f"Сделки прогона: {trades_path}", f"История прогонов: {runs_path}"])
             self.q.put(("backtest_done", {"ok": True, "lines": lines}))
         except Exception as e:  # noqa: BLE001
             log.error("Бэктест (MOEX ISS): упал: %r", e, exc_info=True)
@@ -531,12 +545,20 @@ class App(tk.Tk):
             )
             res = orb_backtest.run(b, bars=bars)
             log.info("Бэктест (QUIK): готово, сделок=%d.", res.summary["trades"])
+            trades_path, runs_path = self._backtest_paths()
+            orb_backtest.save_result(
+                b, res, source="quik_chart", trades_path=trades_path, runs_path=runs_path,
+                bars_count=len(bars),
+                date_from=bars[0].dt.date().isoformat(), date_till=bars[-1].dt.date().isoformat())
+            log.info("Бэктест (QUIK): сделки прогона -> %s · история прогонов -> %s",
+                     trades_path, runs_path)
             lines = [
                 f"Контракт (предположительно): {sec} · тег графика '{tag}'",
                 f"Баров: {len(bars)} ({bars[0].dt:%Y-%m-%d %H:%M} → {bars[-1].dt:%Y-%m-%d %H:%M})",
                 f"Стоимость пункта: {rpp:.2f} ₽ · ГО: {go:.0f} ₽ (текущие значения из QUIK, не исторические)",
                 f"Сделок: {res.summary['trades']}",
-            ] + orb_journal.summary_lines(res.summary)
+            ] + orb_journal.summary_lines(res.summary) + [
+                "", f"Сделки прогона: {trades_path}", f"История прогонов: {runs_path}"]
             self.q.put(("backtest_quik_done", {"ok": True, "lines": lines}))
         except Exception as e:  # noqa: BLE001
             log.error("Бэктест (QUIK): упал: %r", e, exc_info=True)

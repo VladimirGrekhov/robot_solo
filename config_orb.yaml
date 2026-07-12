@@ -71,6 +71,8 @@ paths:
   trades_csv: logs/orb_trades.csv
   skips_csv: logs/orb_skips.csv
   risk_state_json: logs/orb_risk_state.json
+  backtest_trades_csv: logs/orb_backtest_trades.csv   # сделки ПОСЛЕДНЕГО прогона (перезапись)
+  backtest_runs_csv: logs/orb_backtest_runs.csv       # история прогонов (накапливается)
   log_dir: logs
 
 kill_switch_dir: "."   # наличие файла STOP в этой директории -> немедленная остановка
