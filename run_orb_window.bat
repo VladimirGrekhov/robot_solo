@@ -10,12 +10,15 @@ rem ============================================================
 setlocal
 cd /d "%~dp0"
 
-set "PY=python"
-where python >nul 2>nul || set "PY=py"
+rem py-лаунчер ищет РЕАЛЬНО установленные Python (через реестр), а не первый
+rem попавшийся python.exe в PATH — им часто оказывается урезанный интерпретатор,
+rem встроенный в другую программу (Inkscape/GIMP/Blender и т.п., без pip/tkinter).
+set "PY=py"
+where py >nul 2>nul || set "PY=python"
 
 %PY% --version >nul 2>nul
 if errorlevel 1 (
-    echo [ERROR] Python не найден в PATH. Установи Python или добавь его в PATH.
+    echo [ERROR] Python не найден. Установи Python с python.org (галка "Add to PATH").
     pause
     exit /b 1
 )
