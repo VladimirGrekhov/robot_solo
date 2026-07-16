@@ -243,6 +243,12 @@ class OrbOrchestrator:
         self.chart_tag = cfg.get("chart_tag", "")
         self.chart_block = False               # входы заблокированы из-за неверного графика
         self.chart_block_reason = ""
+        # сайзинг (пункт №4): защита от мусорных чтений ГО/rpp + опционально от живого equity
+        sz = cfg.get("sizing", {})
+        self.size_from_equity = bool(sz.get("from_live_equity", False))
+        self.go_min = float(sz.get("go_min_rub", 3000.0))
+        self.go_max = float(sz.get("go_max_rub", 100000.0))
+        self.equity_min = float(sz.get("equity_min_rub", 10000.0))
 
     def _emit(self, kind: str, data: dict) -> None:
         if self.on_event:
@@ -252,11 +258,42 @@ class OrbOrchestrator:
         return orb_calendar.active_contract(d)
 
     def _sizing_inputs(self, sec: str):
+        """Стоимость пункта и ГО на контракт с защитой от мусорных чтений (пункт №4):
+        rpp<=0 -> 1.0; ГО вне [go_min, go_max] или не прочитано -> go_per_contract_assumed."""
         cls = self.cfg["class_code"]
         tick = float(self.cfg.get("tick_size", 1.0))
         rpp = _rub_per_point(self.qp, cls, sec, tick) or 1.0
-        go = _read_go(self.qp, cls, sec) or self.cfg.get("backtest", {}).get("go_per_contract_assumed", 12000.0)
+        if rpp <= 0:
+            rpp = 1.0
+        fallback_go = float(self.cfg.get("backtest", {}).get("go_per_contract_assumed", 12000.0))
+        go_raw = _read_go(self.qp, cls, sec)
+        if go_raw is not None and self.go_min <= go_raw <= self.go_max:
+            go = go_raw
+        else:
+            if go_raw is not None:
+                log.warning("ГО из QUIK %.0f вне [%.0f, %.0f] — беру фолбэк %.0f (защита сайзинга).",
+                            go_raw, self.go_min, self.go_max, fallback_go)
+            go = fallback_go
         return rpp, go
+
+    def _sizing_basis(self) -> float:
+        """Капитал для расчёта размера позиции. По умолчанию — deposit_rub из конфига;
+        при sizing.from_live_equity — живой equity из QUIK (с фолбэком на deposit_rub,
+        если чтение не удалось или подозрительно мало'). Риск-лимиты (дневной/недельный)
+        всегда считаются от deposit_rub — это фиксированная точка отсчёта потерь."""
+        deposit = float(self.cfg["deposit_rub"])
+        if not self.size_from_equity:
+            return deposit
+        try:
+            firm, trdacc = self._acct_ids()
+            snap = orb_account.read_account(self.qp, firm, trdacc)
+        except Exception:  # noqa: BLE001
+            snap = None
+        eq = snap.get("equity_derived") if snap else None
+        if eq is None or eq < self.equity_min:
+            log.warning("equity из QUIK не прочитан/мал (%s) — сайзинг от deposit_rub %.0f.", eq, deposit)
+            return deposit
+        return float(eq)
 
     def _acct_ids(self):
         if self._acct == (None, None):
@@ -436,15 +473,17 @@ class OrbOrchestrator:
                                         "bar": bar.dt.isoformat(sep=" ")})
             else:
                 rpp, go = self._sizing_inputs(sec)
+                basis = self._sizing_basis()
                 stop_points = abs(bar.open - entry.stop_price)
-                qty = orb_risk.position_size(self.cfg["deposit_rub"], stop_points, rpp, go, self.risk_cfg)
+                qty = orb_risk.position_size(basis, stop_points, rpp, go, self.risk_cfg)
                 if qty > 0:
                     self.state = orb_strategy.open_position(self.state, entry, bar.open)
                     self.open_meta = {"side": entry.side, "entry_time": bar.dt, "entry_price": bar.open,
                                        "stop_price": entry.stop_price, "qty": qty, "rub_per_point": rpp,
                                        "range_width": entry.range_high - entry.range_low}
-                    log.info("ВХОД %s: бар=%s цена~%.2f стоп=%.2f qty=%d",
-                             entry.side.upper(), bar.dt, bar.open, entry.stop_price, qty)
+                    log.info("ВХОД %s: бар=%s цена~%.2f стоп=%.2f qty=%d (капитал=%.0f ГО=%.0f rpp=%.2f стоп=%.0fпт)",
+                             entry.side.upper(), bar.dt, bar.open, entry.stop_price, qty,
+                             basis, go, rpp, stop_points)
                     if self.live and not replay:
                         self._send_entry_orders(sec, entry.side, qty, entry.stop_price)
                     if not replay:
