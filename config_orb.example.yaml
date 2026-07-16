@@ -1,4 +1,10 @@
-# config_orb.yaml — конфиг робота ORB (Opening Range Breakout), Si M15.
+# config_orb.example.yaml — ШАБЛОН конфига робота ORB (Opening Range Breakout), Si M15.
+#
+# Это образец, отслеживаемый в git. Рабочий файл — config_orb.yaml — в git НЕ входит
+# (см. .gitignore), правится окном и живёт только у тебя. При первой настройке:
+#   copy config_orb.example.yaml config_orb.yaml   (Windows)
+# затем впиши свои account/тег/депозит (или задай на вкладке «Настройки» в окне).
+# Так git pull больше не будет конфликтовать из-за твоих локальных настроек.
 #
 # mode: backtest | paper | live
 #   backtest — прогон на истории MOEX ISS, реального QUIK не требует;

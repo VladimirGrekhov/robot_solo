@@ -5,6 +5,8 @@ logs/*.log
 logs/orb_*.csv
 logs/orb_risk_state.json
 data_cache/
+# рабочий конфиг — локальный, правится окном; шаблон в репо: config_orb.example.yaml
+config_orb.yaml
 .vscode/
 .idea/
 *.swp
