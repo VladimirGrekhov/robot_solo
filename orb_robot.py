@@ -781,6 +781,13 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
     except KeyboardInterrupt:
         log.info("Остановлен пользователем (Ctrl+C).")
     finally:
+        # закрыть QuikPy-соединение, иначе его фоновый поток держит порты слота и
+        # повторный Старт зависает на «подключение…» (connect_quik на занятый порт)
+        try:
+            qp.close_connection_and_thread()
+            log.info("QUIK-соединение закрыто.")
+        except Exception as e:  # noqa: BLE001
+            log.warning("Не удалось закрыть QUIK-соединение: %r", e)
         if on_event:
             on_event("stopped", {})
 
