@@ -166,6 +166,41 @@ def _read_go(qp, cls: str, sec: str) -> float | None:
     return max(vals) if vals else None
 
 
+def _read_last(qp, cls: str, sec: str) -> float | None:
+    """Последняя цена (LAST) контракта sec напрямую по коду — для сверки графика."""
+    try:
+        d = qp.get_param_ex(cls, sec, "LAST").get("data") or {}
+        if str(d.get("result")) == "1":
+            v = float(d.get("param_value"))
+            if v > 0:
+                return v
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def chart_sec(qp, tag: str) -> str | None:
+    """Best-effort: код инструмента, к которому привязан график с тегом tag.
+
+    Зависит от версии QuikPy — метода может не быть; тогда None и охрана графика
+    работает по цене/свежести. Пробуем несколько правдоподобных имён гейттеров,
+    все обёрнуты в try/except (только чтение)."""
+    for meth in ("get_tag_seccode", "get_chart_seccode", "get_datasource_seccode", "get_tag_info"):
+        fn = getattr(qp, meth, None)
+        if fn is None:
+            continue
+        try:
+            r = fn(tag)
+        except Exception:  # noqa: BLE001
+            continue
+        val = r.get("data") if isinstance(r, dict) and "data" in r else r
+        if isinstance(val, dict):
+            val = val.get("sec_code") or val.get("seccode")
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
 class OrbOrchestrator:
     """Общая логика обработки одного закрытого бара для paper и live.
 
@@ -200,6 +235,14 @@ class OrbOrchestrator:
         self.close_retries = int(exe.get("close_retries", 3))
         self._acct: tuple = (None, None)      # (firm_id, trdacc) — ленивое определение
         self.stop_ref_active = False          # выставлена ли живая стоп-заявка по текущей позиции
+        # охрана графика: график (источник сигналов) должен совпадать с торгуемым контрактом
+        cg = cfg.get("chart_guard", {})
+        self.chart_guard_on = bool(cg.get("enabled", True))
+        self.chart_tol_pct = float(cg.get("price_tolerance_pct", 1.0))
+        self.chart_max_age_min = float(cg.get("max_bar_age_minutes", 40.0))
+        self.chart_tag = cfg.get("chart_tag", "")
+        self.chart_block = False               # входы заблокированы из-за неверного графика
+        self.chart_block_reason = ""
 
     def _emit(self, kind: str, data: dict) -> None:
         if self.on_event:
@@ -234,6 +277,56 @@ class OrbOrchestrator:
             actual = self._net_position(sec)
         return actual == expected, actual
 
+    def _evaluate_chart(self, bar: orb_strategy.Bar, sec: str, now: datetime | None = None) -> None:
+        """Сверяет, что график (источник сигналов) = торгуемый контракт sec.
+
+        Три проверки по убыванию точности: (1) точное имя sec за тегом, если QuikPy
+        умеет; (2) цена графика vs LAST контракта; (3) свежесть последнего бара.
+        При несоответствии ставит self.chart_block (входы блокируются), иначе снимает."""
+        if not self.chart_guard_on:
+            self.chart_block = False
+            return
+        cls = self.cfg["class_code"]
+
+        got = chart_sec(self.qp, self.chart_tag)
+        if got is not None:
+            if got != sec:
+                self._set_chart_block("sec", f"график привязан к {got}, а торгуем {sec}")
+            else:
+                self._clear_chart_block()
+            return
+
+        last = _read_last(self.qp, cls, sec)
+        if last is not None and last > 0:
+            dev = abs(bar.close - last) / last * 100
+            if dev > self.chart_tol_pct:
+                self._set_chart_block(
+                    "price", f"цена графика {bar.close:.0f} расходится с LAST {sec} {last:.0f} "
+                             f"на {dev:.1f}% (>{self.chart_tol_pct:g}%)")
+                return
+
+        age_min = (( now or datetime.now()) - bar.dt).total_seconds() / 60.0
+        if age_min > self.chart_max_age_min:
+            self._set_chart_block(
+                "stale", f"последний бар графика {bar.dt} старше {self.chart_max_age_min:g} мин "
+                         f"(возможно, истёкший/неверный контракт)")
+            return
+
+        self._clear_chart_block()
+
+    def _set_chart_block(self, code: str, msg: str) -> None:
+        if not self.chart_block or self.chart_block_reason != code:
+            log.error("НЕВЕРНЫЙ ГРАФИК: %s — входы заблокированы, открытую позицию контролируй вручную.", msg)
+            self._emit("error", {"text": f"неверный график: {msg} — входы заблокированы"})
+        self.chart_block = True
+        self.chart_block_reason = code
+
+    def _clear_chart_block(self) -> None:
+        if self.chart_block:
+            log.info("график снова соответствует торгуемому контракту — блок входов снят.")
+        self.chart_block = False
+        self.chart_block_reason = ""
+
     def handle_bar(self, bar: orb_strategy.Bar, replay: bool = False) -> None:
         day = bar.dt.date()
         if orb_risk.kill_switch_active(self.kill_dir):
@@ -263,35 +356,50 @@ class OrbOrchestrator:
 
         sec = self._contract(day)
 
+        # охрана графика: сверяем источник сигналов с торгуемым контрактом (не на реплее)
+        if not replay:
+            self._evaluate_chart(bar, sec)
+
         if self.pending_entry is not None:
             entry = self.pending_entry
             self.pending_entry = None
-            rpp, go = self._sizing_inputs(sec)
-            stop_points = abs(bar.open - entry.stop_price)
-            qty = orb_risk.position_size(self.cfg["deposit_rub"], stop_points, rpp, go, self.risk_cfg)
-            if qty > 0:
-                self.state = orb_strategy.open_position(self.state, entry, bar.open)
-                self.open_meta = {"side": entry.side, "entry_time": bar.dt, "entry_price": bar.open,
-                                   "stop_price": entry.stop_price, "qty": qty, "rub_per_point": rpp,
-                                   "range_width": entry.range_high - entry.range_low}
-                log.info("ВХОД %s: бар=%s цена~%.2f стоп=%.2f qty=%d",
-                         entry.side.upper(), bar.dt, bar.open, entry.stop_price, qty)
-                if self.live and not replay:
-                    self._send_entry_orders(sec, entry.side, qty, entry.stop_price)
+            if self.chart_block:
+                # неверный график: вход не открываем, но обработку бара продолжаем
+                # (открытая позиция должна и дальше вестись/закрываться штатно)
+                log.warning("вход %s ОТМЕНЁН: неверный график (%s).", entry.side, self.chart_block_reason)
                 if not replay:
-                    self._emit("entry", {"side": entry.side, "bar": bar.dt.isoformat(sep=" "),
-                                          "price": bar.open, "stop": entry.stop_price, "qty": qty})
-            else:
-                log.info("вход %s пропущен: нулевой размер позиции (риск/ГО-лимит)", entry.side)
-                if not replay:
-                    orb_journal.append_skip(self.skips_path, bar.dt, entry.side, "zero_qty")
-                    self._emit("skip", {"side": entry.side, "reason": "zero_qty",
+                    orb_journal.append_skip(self.skips_path, bar.dt, entry.side, "wrong_chart")
+                    self._emit("skip", {"side": entry.side, "reason": "wrong_chart",
                                         "bar": bar.dt.isoformat(sep=" ")})
+            else:
+                rpp, go = self._sizing_inputs(sec)
+                stop_points = abs(bar.open - entry.stop_price)
+                qty = orb_risk.position_size(self.cfg["deposit_rub"], stop_points, rpp, go, self.risk_cfg)
+                if qty > 0:
+                    self.state = orb_strategy.open_position(self.state, entry, bar.open)
+                    self.open_meta = {"side": entry.side, "entry_time": bar.dt, "entry_price": bar.open,
+                                       "stop_price": entry.stop_price, "qty": qty, "rub_per_point": rpp,
+                                       "range_width": entry.range_high - entry.range_low}
+                    log.info("ВХОД %s: бар=%s цена~%.2f стоп=%.2f qty=%d",
+                             entry.side.upper(), bar.dt, bar.open, entry.stop_price, qty)
+                    if self.live and not replay:
+                        self._send_entry_orders(sec, entry.side, qty, entry.stop_price)
+                    if not replay:
+                        self._emit("entry", {"side": entry.side, "bar": bar.dt.isoformat(sep=" "),
+                                              "price": bar.open, "stop": entry.stop_price, "qty": qty})
+                else:
+                    log.info("вход %s пропущен: нулевой размер позиции (риск/ГО-лимит)", entry.side)
+                    if not replay:
+                        orb_journal.append_skip(self.skips_path, bar.dt, entry.side, "zero_qty")
+                        self._emit("skip", {"side": entry.side, "reason": "zero_qty",
+                                            "bar": bar.dt.isoformat(sep=" ")})
 
         blocked, reason = orb_calendar.entry_gate(bar.dt, self.expiration_zone_mode)
         force_flat = orb_calendar.force_flat_gate(bar.dt)
         if not blocked:
-            if self.risk_state.halted:
+            if self.chart_block:
+                blocked, reason = True, "wrong_chart"
+            elif self.risk_state.halted:
                 blocked, reason = True, "halted"
             elif orb_risk.daily_limit_hit(self.risk_state, self.cfg["deposit_rub"], self.risk_cfg):
                 blocked, reason = True, "daily_limit"
@@ -513,6 +621,18 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
     expected = orb_calendar.active_contract(today)
     log.info("Ожидаемый активный контракт на сегодня: %s — сверь, что график с тегом '%s' привязан к нему.",
              expected, tag)
+
+    # доступна ли на этой версии QuikPy точная сверка sec за тегом (иначе — по цене/свежести)
+    _probe = chart_sec(qp, tag)
+    if _probe is not None:
+        log.info("Охрана графика: QuikPy отдаёт sec за тегом '%s' = %s (ожидается %s) — точная сверка АКТИВНА.",
+                 tag, _probe, expected)
+        if _probe != expected:
+            log.error("НЕВЕРНЫЙ ГРАФИК на старте: тег '%s' привязан к %s, а торгуем %s — входы будут заблокированы!",
+                      tag, _probe, expected)
+    else:
+        log.info("Охрана графика: QuikPy НЕ отдаёт sec за тегом '%s' — сверка по имени недоступна, "
+                 "работает сверка по цене/свежести последнего бара.", tag)
 
     orch = OrbOrchestrator(cfg, qp, live, on_event=on_event)
 
