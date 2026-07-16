@@ -94,16 +94,9 @@ def read_account(qp, firm_id=None, trdacc=None, currency: str = "SUR") -> dict |
     }
 
 
-def read_position(qp, sec_code: str, firm_id=None, trdacc=None) -> int | None:
-    """Фактическая ЧИСТАЯ позиция по контракту sec_code из QUIK. READ-ONLY.
-
-    >0 — длинная (лонг) на N контрактов, <0 — короткая, 0 — плоско.
-    None — прочитать не удалось (метод недоступен / ошибка / нет счёта): вызывающий
-    код обязан трактовать None как «неизвестно» и действовать консервативно.
-
-    Источник — get_futures_holding(firm, trdacc, sec, limit_type=0), поле totalnet.
-    ВНИМАНИЕ: имя метода/поля зависит от версии QuikPy — проверь на своём терминале
-    (тот же дисклеймер, что и у get_futures_limit в этом модуле)."""
+def _read_holding(qp, sec_code: str, firm_id, trdacc) -> dict | None:
+    """Сырой словарь позиции FORTS по контракту (get_futures_holding). READ-ONLY.
+    None — метод недоступен / ошибка / нет счёта / пустой ответ."""
     if firm_id is None or trdacc is None:
         firm_id, trdacc = find_futures_account(qp)
     if not firm_id or not trdacc:
@@ -116,7 +109,23 @@ def read_position(qp, sec_code: str, firm_id=None, trdacc=None) -> int | None:
     except Exception:  # noqa: BLE001
         return None
     data = res.get("data") if isinstance(res, dict) and "data" in res else res
-    if _looks_empty(data):
+    if _looks_empty(data) or not isinstance(data, dict):
+        return None
+    return data
+
+
+def read_position(qp, sec_code: str, firm_id=None, trdacc=None) -> int | None:
+    """Фактическая ЧИСТАЯ позиция по контракту sec_code из QUIK. READ-ONLY.
+
+    >0 — длинная (лонг) на N контрактов, <0 — короткая, 0 — плоско.
+    None — прочитать не удалось (метод недоступен / ошибка / нет счёта): вызывающий
+    код обязан трактовать None как «неизвестно» и действовать консервативно.
+
+    Источник — get_futures_holding(firm, trdacc, sec, limit_type=0), поле totalnet.
+    ВНИМАНИЕ: имя метода/поля зависит от версии QuikPy — проверь на своём терминале
+    (тот же дисклеймер, что и у get_futures_limit в этом модуле)."""
+    data = _read_holding(qp, sec_code, firm_id, trdacc)
+    if data is None:
         return None
     for key in ("totalnet", "total_net", "net"):
         if key in data:
@@ -125,6 +134,35 @@ def read_position(qp, sec_code: str, firm_id=None, trdacc=None) -> int | None:
             except (TypeError, ValueError):
                 return None
     return None
+
+
+def read_position_detail(qp, sec_code: str, firm_id=None, trdacc=None) -> dict | None:
+    """{'net': int, 'avg_price': float|None} — чистая позиция + средняя цена входа
+    (для восстановления состояния при рестарте, пункт №2). None — не прочитать."""
+    data = _read_holding(qp, sec_code, firm_id, trdacc)
+    if data is None:
+        return None
+    net = None
+    for key in ("totalnet", "total_net", "net"):
+        if key in data:
+            try:
+                net = int(round(float(data[key])))
+                break
+            except (TypeError, ValueError):
+                pass
+    if net is None:
+        return None
+    avg = None
+    for key in ("avrposnprice", "avgposprice", "avr_position_price", "avgprice"):
+        if key in data:
+            try:
+                v = float(data[key])
+                if v > 0:
+                    avg = v
+                    break
+            except (TypeError, ValueError):
+                pass
+    return {"net": net, "avg_price": avg}
 
 
 def format_account(snap: dict | None, mask_secrets: bool = True) -> list[str]:

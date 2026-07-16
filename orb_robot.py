@@ -277,6 +277,68 @@ class OrbOrchestrator:
             actual = self._net_position(sec)
         return actual == expected, actual
 
+    def adopt_live_position(self, sec: str) -> None:
+        """Пункт №2: на старте LIVE сверяет позицию, восстановленную по барам, с
+        ФАКТИЧЕСКОЙ в QUIK и приводит внутреннее состояние к реальности.
+
+        Матрица: QUIK плоско + реконструкция плоско -> ок; QUIK плоско +
+        реконструкция позиция -> закрылась пока робот был offline, сброс; QUIK
+        позиция -> подхватываем её (qty/сторона из позиции, стоп из стоп-заявки,
+        цена входа из средней позиции), помечаем сторону использованной. Если
+        позиция «неожиданная» (реконструкция её не дала) — громкий алерт."""
+        detail = orb_account.read_position_detail(self.qp, sec, *self._acct_ids())
+        if detail is None:
+            log.warning("СТАРТ: фактическую позицию из QUIK не прочитать — оставляю реконструкцию по барам, "
+                        "сверь вручную!")
+            self._emit("error", {"text": "позиция из QUIK не читается на старте — сверь вручную"})
+            return
+        net = detail["net"]
+        recon = self.state.position
+
+        if net == 0:
+            if recon is not None:
+                log.warning("СТАРТ: по барам позиция %s, но в QUIK плоско — закрылась, пока робот был offline. "
+                            "Сбрасываю состояние в плоское.", recon.side)
+                self._emit("error", {"text": f"позиция {recon.side} закрылась, пока робот был offline — "
+                                             f"состояние сброшено в плоское"})
+                used = {"long_used": True} if recon.side == "long" else {"short_used": True}
+                self.state = _replace(self.state, position=None, **used)
+                self.open_meta = None
+            return
+
+        side = "long" if net > 0 else "short"
+        qty = abs(net)
+        found_stop = orb_broker_quik.active_stop_price(self.qp, self.cfg["class_code"], sec)
+        self.stop_ref_active = found_stop is not None
+        rh = self.state.range_high if self.state.range_high is not None else 0.0
+        rl = self.state.range_low if self.state.range_low is not None else 0.0
+        stop = found_stop
+        if stop is None:
+            stop = rl if side == "long" else rh
+            log.warning("СТАРТ: активной стоп-заявки по %s не нашёл — беру границу диапазона %.2f. "
+                        "ПРОВЕРЬ/ВЫСТАВЬ стоп в QUIK вручную!", sec, stop)
+            self._emit("error", {"text": f"не найдена стоп-заявка подхваченной позиции {side} — проверь стоп в QUIK!"})
+        entry_price = detail.get("avg_price")
+        if entry_price is None:
+            entry_price = recon.entry_price if recon else stop
+
+        pos = orb_strategy.Position(side=side, entry_time=datetime.now(), entry_price=entry_price,
+                                    stop_price=stop, range_high=rh, range_low=rl)
+        used = {"long_used": True} if side == "long" else {"short_used": True}
+        self.state = _replace(self.state, position=pos, **used)
+        rpp, _ = self._sizing_inputs(sec)
+        self.open_meta = {"side": side, "entry_time": pos.entry_time, "entry_price": entry_price,
+                          "stop_price": stop, "qty": qty, "rub_per_point": rpp,
+                          "range_width": rh - rl}
+
+        if recon is None or recon.side != side:
+            log.error("СТАРТ: подхватил НЕОЖИДАННУЮ позицию из QUIK: %s %d (реконструкция по барам её не дала) — "
+                      "СВЕРЬ ВРУЧНУЮ.", side, qty)
+            self._emit("error", {"text": f"подхвачена неожиданная позиция из QUIK: {side} {qty} — сверь вручную"})
+        else:
+            log.info("СТАРТ: подхватил открытую позицию из QUIK: %s %d, стоп %.2f, вход~%.2f.",
+                     side, qty, stop, entry_price)
+
     def _evaluate_chart(self, bar: orb_strategy.Bar, sec: str, now: datetime | None = None) -> None:
         """Сверяет, что график (источник сигналов) = торгуемый контракт sec.
 
@@ -649,7 +711,8 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
         b = _to_bar(c)
         if b:
             orch.handle_bar(b, replay=True)
-    if orch.state.position is not None:
+    if orch.state.position is not None and not (live and orch.verify_exec):
+        # в live+verify реальную позицию подхватит adopt_live_position ниже; здесь — только paper/verify-off
         log.warning("ВНИМАНИЕ: по разметке сегодняшней истории должна быть открытая позиция %s — "
                     "робот запущен не с начала дня, сверь с реальными позициями/заявками в QUIK вручную!",
                     orch.state.position.side)
@@ -667,6 +730,10 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
                   "Робот не получает данных и торговать не будет — проверь график.", tag)
         if on_event:
             on_event("error", {"text": f"нет свечей по тегу '{tag}' — график не открыт/переименован"})
+
+    # пункт №2: подхват реальной позиции из QUIK при рестарте/краше (только live, после start)
+    if live and orch.verify_exec:
+        orch.adopt_live_position(expected)
 
     acct_firm, acct_trdacc = orb_account.find_futures_account(qp)
     _emit_account(qp, acct_firm, acct_trdacc, on_event)

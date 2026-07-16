@@ -137,6 +137,37 @@ def active_stop_orders(qp, class_code: str, sec_code: str) -> list[int] | None:
     return nums
 
 
+def active_stop_price(qp, class_code: str, sec_code: str) -> float | None:
+    """Цена (STOPPRICE) первой активной стоп-заявки по контракту — для восстановления
+    стопа подхваченной позиции при рестарте (пункт №2). None — не найдено/не прочитать."""
+    getter = getattr(qp, "get_stop_orders", None)
+    if getter is None:
+        return None
+    try:
+        res = getter()
+    except Exception:  # noqa: BLE001
+        return None
+    data = res.get("data") if isinstance(res, dict) and "data" in res else res
+    if not isinstance(data, list):
+        return None
+    for so in data:
+        if not isinstance(so, dict):
+            continue
+        if so.get("sec_code") != sec_code or (class_code and so.get("class_code") not in (class_code, None)):
+            continue
+        if not (int(so.get("flags", 0) or 0) & 0x1):     # только активные
+            continue
+        for key in ("condition_price", "stopprice", "stop_price", "price"):
+            if key in so:
+                try:
+                    v = float(so[key])
+                    if v > 0:
+                        return v
+                except (TypeError, ValueError):
+                    pass
+    return None
+
+
 def cancel_stops(qp, class_code: str, sec_code: str) -> int | None:
     """Снимает все активные стоп-заявки по контракту. Возвращает число снятых,
     или None если список активных стопов прочитать не удалось (нельзя гарантировать
