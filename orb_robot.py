@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import sys
 import time as _time
 from dataclasses import replace as _replace
@@ -40,6 +41,17 @@ log = logging.getLogger("orb_robot")
 
 def load_config(path: str | Path | None = None) -> dict:
     path = Path(path) if path else HERE / "config_orb.yaml"
+    # config_orb.yaml локальный (в git его нет) — при отсутствии создаём из шаблона,
+    # чтобы свежий клон / случайно удалённый файл не роняли робота с FileNotFoundError
+    if not path.exists():
+        example = HERE / "config_orb.example.yaml"
+        if example.exists():
+            shutil.copyfile(example, path)
+            log.warning("config_orb.yaml не найден — создан из config_orb.example.yaml. "
+                        "Проверь настройки (account/тег/депозит) на вкладке «Настройки».")
+        else:
+            raise FileNotFoundError(
+                f"нет ни {path.name}, ни config_orb.example.yaml в {path.parent}")
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
