@@ -148,6 +148,11 @@ class App(tk.Tk):
         self.online_lbl = tk.Label(row2, text="", bg=BG_PANEL, fg=FG_MUTED, font=FONT)
         self.online_lbl.pack(side="left")
 
+        # баннер алерта — виден на любой вкладке (шапка над вкладками); пуст = сливается с фоном
+        self.alert_lbl = tk.Label(head, text="", bg=BG_PANEL, fg="#ffd0d0", font=FONT_BOLD,
+                                   anchor="w", justify="left", wraplength=780)
+        self.alert_lbl.pack(fill="x", padx=12, pady=(0, 4))
+
         btns = tk.Frame(head, bg=BG_PANEL)
         btns.pack(fill="x", padx=12, pady=(0, 10))
         self.start_btn = tk.Button(btns, text="Старт", command=self._start, bg=ACCENT, fg=FG,
@@ -775,6 +780,7 @@ class App(tk.Tk):
         if kind == "start":
             self._set_lamp(GREEN)
             self.status_lbl.config(text="работает")
+            self._clear_alert()
             self.mode_lbl.config(text=f"режим: {data['mode']} · "
                                       + ("боевой" if data["live_trading"] else "симуляция"))
             self.robot_head.config(text=f"контракт: {data['contract']} · график '{data['tag']}' · "
@@ -815,17 +821,27 @@ class App(tk.Tk):
         elif kind == "error":
             self._set_lamp(RED)
             self.status_lbl.config(text="ошибка")
-            self._append(self.logbox, "ОШИБКА: " + data.get("text", ""))
+            text = data.get("text", "")
+            self.alert_lbl.config(text="⚠ " + text, bg="#5a1a1a")
+            self._append(self.logbox, "ОШИБКА: " + text)
+        elif kind == "chart_ok":
+            self._clear_alert()
+            self._set_lamp(GREEN)
+            self.status_lbl.config(text="работает")
         elif kind == "stopped":
             self._set_lamp(GREY)
             self.status_lbl.config(text="остановлен")
             self.online_lbl.config(text="")
+            self._clear_alert()
             self.start_btn.config(state="normal")
             self.stop_btn.config(state="disabled")
 
     # --- мелочи ---------------------------------------------------------------------
     def _set_lamp(self, color):
         self.lamp.itemconfig("dot", fill=color)
+
+    def _clear_alert(self):
+        self.alert_lbl.config(text="", bg=BG_PANEL)
 
     def _append(self, widget: tk.Text, text: str):
         widget.configure(state="normal")

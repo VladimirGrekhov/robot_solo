@@ -324,6 +324,7 @@ class OrbOrchestrator:
     def _clear_chart_block(self) -> None:
         if self.chart_block:
             log.info("график снова соответствует торгуемому контракту — блок входов снят.")
+            self._emit("chart_ok", {"text": "график снова соответствует контракту"})
         self.chart_block = False
         self.chart_block_reason = ""
 
@@ -643,11 +644,6 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
     # только чтобы восстановить диапазон/флаги/(предположительную) открытую позицию
     all_candles = _load_recent(qp, tag, want=None)
     no_data = len(all_candles) < 2          # нет закрытых баров = тег пуст/переименован (как в QUIK-бэктесте)
-    if no_data:
-        log.error("НЕТ СВЕЧЕЙ по тегу '%s' — график с этим тегом не открыт в QUIK или тег переименован. "
-                  "Робот не получает данных и торговать не будет — проверь график.", tag)
-        if on_event:
-            on_event("error", {"text": f"нет свечей по тегу '{tag}' — график не открыт/переименован"})
     todays = [c for c in all_candles if (_bar_dt(c) or datetime.min).date() == today]
     for c in todays[:-1] if todays else []:
         b = _to_bar(c)
@@ -664,6 +660,13 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
     if on_event:
         on_event("start", {"mode": "live" if live else "paper", "live_trading": cfg.get("live_trading"),
                            "contract": expected, "tag": tag, "tf": tf})
+
+    # алерт «нет свечей» — ПОСЛЕ start, иначе start перекрасит лампу обратно в «работает»
+    if no_data:
+        log.error("НЕТ СВЕЧЕЙ по тегу '%s' — график с этим тегом не открыт в QUIK или тег переименован. "
+                  "Робот не получает данных и торговать не будет — проверь график.", tag)
+        if on_event:
+            on_event("error", {"text": f"нет свечей по тегу '{tag}' — график не открыт/переименован"})
 
     acct_firm, acct_trdacc = orb_account.find_futures_account(qp)
     _emit_account(qp, acct_firm, acct_trdacc, on_event)
@@ -696,6 +699,8 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
             if no_data:
                 log.info("Свечи по тегу '%s' снова поступают — данные восстановлены.", tag)
                 no_data = False
+                if on_event:
+                    on_event("chart_ok", {"text": "данные по графику восстановлены"})
             closed = candles[:-1]
             new = [c for c in closed if (_bar_dt(c) or datetime.min) > (last_dt or datetime.min)]
             for c in new:
