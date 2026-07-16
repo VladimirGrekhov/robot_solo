@@ -32,6 +32,16 @@ timeframe_minutes: 15
 bar_close_delay_seconds: 7
 account_poll_seconds: 10   # как часто опрашивать средства счёта (вкладка «Счёт» в orb_window.py)
 
+# сверка исполнения заявок в live (пункт №1): робот читает ФАКТИЧЕСКУЮ позицию из
+# QUIK (get_futures_holding) и проверяет, что вход исполнился, стоп встал, а закрытие
+# реально ушло в ноль. Требует, чтобы у QuikPy работал get_futures_holding/get_stop_orders
+# на твоём терминале (имена методов зависят от версии — см. дисклеймер в orb_account.py).
+execution:
+  verify: true                    # false — старое поведение (заявки вслепую, без сверки)
+  confirm_timeout_seconds: 10     # сколько ждать подтверждения позиции после заявки
+  confirm_poll_seconds: 1         # период опроса позиции
+  close_retries: 3                # сколько раз повторить рыночное закрытие, если не ушло в ноль
+
 risk:
   risk_per_trade: 0.01
   go_fraction: 0.30

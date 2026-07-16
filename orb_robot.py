@@ -192,6 +192,14 @@ class OrbOrchestrator:
         self.open_meta: dict | None = None
         self.pending_entry: orb_strategy.EntrySignal | None = None
         self.halted_by_kill_switch = False
+        # сверка исполнения (пункт №1): читаем фактическую позицию/стопы из QUIK
+        exe = cfg.get("execution", {})
+        self.verify_exec = bool(exe.get("verify", True))
+        self.confirm_timeout = float(exe.get("confirm_timeout_seconds", 10.0))
+        self.confirm_poll = float(exe.get("confirm_poll_seconds", 1.0))
+        self.close_retries = int(exe.get("close_retries", 3))
+        self._acct: tuple = (None, None)      # (firm_id, trdacc) — ленивое определение
+        self.stop_ref_active = False          # выставлена ли живая стоп-заявка по текущей позиции
 
     def _emit(self, kind: str, data: dict) -> None:
         if self.on_event:
@@ -206,6 +214,25 @@ class OrbOrchestrator:
         rpp = _rub_per_point(self.qp, cls, sec, tick) or 1.0
         go = _read_go(self.qp, cls, sec) or self.cfg.get("backtest", {}).get("go_per_contract_assumed", 12000.0)
         return rpp, go
+
+    def _acct_ids(self):
+        if self._acct == (None, None):
+            self._acct = orb_account.find_futures_account(self.qp)
+        return self._acct
+
+    def _net_position(self, sec: str) -> int | None:
+        """Фактическая чистая позиция из QUIK (>0 лонг, <0 шорт, 0 плоско, None — не прочитать)."""
+        firm, trdacc = self._acct_ids()
+        return orb_account.read_position(self.qp, sec, firm, trdacc)
+
+    def _confirm_net(self, sec: str, expected: int):
+        """Опрашивает позицию до совпадения с expected или таймаута. -> (ok, actual|None)."""
+        deadline = _time.monotonic() + self.confirm_timeout
+        actual = self._net_position(sec)
+        while actual != expected and _time.monotonic() < deadline:
+            _time.sleep(max(self.confirm_poll, 0.0))
+            actual = self._net_position(sec)
+        return actual == expected, actual
 
     def handle_bar(self, bar: orb_strategy.Bar, replay: bool = False) -> None:
         day = bar.dt.date()
@@ -223,7 +250,8 @@ class OrbOrchestrator:
                 orb_risk.save_risk_state(self.risk_path, self.risk_state)
                 log.info("ВЫХОД %s: причина=kill pnl=%.2f пт / %.2f руб", trade.dir, trade.pnl_pt, trade.pnl_rub)
                 if self.live and not replay:
-                    self._send_flat(self.state.position.side, reason="kill")
+                    self._close_position(self._contract(day), self.state.position.side,
+                                         self.open_meta["qty"] if self.open_meta else 0, reason="kill")
                 if not replay:
                     self._emit("trade", self._trade_payload(trade))
                 self.open_meta = None
@@ -281,7 +309,8 @@ class OrbOrchestrator:
             log.info("ВЫХОД %s: причина=%s pnl=%.2f пт / %.2f руб", trade.dir, trade.exit_reason,
                      trade.pnl_pt, trade.pnl_rub)
             if self.live and not replay:
-                self._send_flat(trade.dir, reason=trade.exit_reason)
+                self._close_position(sec, trade.dir, self.open_meta["qty"] if self.open_meta else 0,
+                                     reason=trade.exit_reason)
             if not replay:
                 self._emit("trade", self._trade_payload(trade))
             self.open_meta = None
@@ -317,24 +346,115 @@ class OrbOrchestrator:
                 "datetime_out": trade.datetime_out.isoformat(sep=" ")}
 
     def _send_entry_orders(self, sec: str, side: str, qty: int, stop_price: float) -> None:
+        """Вход + защитный стоп со сверкой (пункт №1): подтверждаем фил по факту
+        позиции, приводим qty к фактическому, гарантируем, что стоп встал (иначе
+        аварийно закрываемся — голую позицию не держим)."""
         cfg = self.cfg
         r = orb_broker_quik.send_market_order(self.qp, cfg["account"], cfg["class_code"], sec, side, qty,
                                                cfg.get("client_code", ""))
         log.info("заявка вход отправлена: %s", r)
+
+        if self.verify_exec:
+            signed = qty if side == "long" else -qty
+            ok, actual = self._confirm_net(sec, signed)
+            if actual is None:
+                log.error("ВХОД %s: позицию из QUIK не прочитать — фил НЕ подтверждён, сверь вручную!", side)
+                self._emit("error", {"text": f"вход {side}: фил не подтверждён (позиция не читается)"})
+            elif actual == 0:
+                log.error("ВХОД %s НЕ ИСПОЛНЕН (позиция QUIK=0) — сбрасываю внутреннее состояние в плоское.", side)
+                self._emit("error", {"text": f"вход {side} не исполнён — робот сброшен в плоское"})
+                orb_broker_quik.cancel_stops(self.qp, cfg["class_code"], sec)
+                self.state = _replace(self.state, position=None)
+                self.open_meta = None
+                self.stop_ref_active = False
+                return
+            elif abs(actual) != qty:
+                real_qty = abs(actual)
+                log.warning("ВХОД %s частичный фил: ожидали %d, факт %d — привожу размер к факту.",
+                            side, qty, real_qty)
+                self._emit("error", {"text": f"частичный фил {side}: {real_qty}/{qty}"})
+                if self.open_meta is not None:
+                    self.open_meta["qty"] = real_qty
+                qty = real_qty
+
         closing_side = "short" if side == "long" else "long"
         r2 = orb_broker_quik.send_stop_order(self.qp, cfg["account"], cfg["class_code"], sec, closing_side,
                                               qty, stop_price, cfg.get("client_code", ""))
         log.info("стоп-заявка отправлена: %s", r2)
+        self.stop_ref_active = True
+        if self.verify_exec and not r2.ok:
+            log.error("СТОП-ЗАЯВКА не принята (%s) — повтор.", r2)
+            r2 = orb_broker_quik.send_stop_order(self.qp, cfg["account"], cfg["class_code"], sec, closing_side,
+                                                  qty, stop_price, cfg.get("client_code", ""))
+            log.info("стоп-заявка (повтор) отправлена: %s", r2)
+            if not r2.ok:
+                log.error("СТОП не встал повторно — АВАРИЙНОЕ закрытие позиции (защиты нет).")
+                self._emit("error", {"text": "стоп не встал — аварийно закрываю позицию"})
+                self._close_position(sec, side, qty, reason="no_stop")
+                self.state = _replace(self.state, position=None)
+                self.open_meta = None
 
-    def _send_flat(self, position_side: str, reason: str) -> None:
+    def _close_position(self, sec: str, position_side: str, expected_qty: int, reason: str) -> None:
+        """Закрытие позиции со сверкой (пункт №1): сначала снимаем висящий стоп
+        (иначе GTC-стоп останется и может сработать позже), затем читаем ФАКТИЧЕСКУЮ
+        позицию и закрываем ровно её — это чинит двойное исполнение на выходе по
+        'stop' (брокерский стоп уже мог закрыть) и частичные закрытия. Повтор +
+        громкий алерт, если позиция не ушла в ноль."""
         cfg = self.cfg
-        sec = self._contract(date.today())
-        qty = self.open_meta["qty"] if self.open_meta else 0
+        killed = orb_broker_quik.cancel_stops(self.qp, cfg["class_code"], sec)
+        if killed is None:
+            log.warning("стоп-заявки по %s не прочитать/снять — проверь терминал вручную (может висеть GTC-стоп).",
+                        sec)
+        self.stop_ref_active = False
+
+        if not self.verify_exec:
+            self._send_flat_raw(sec, position_side, expected_qty, reason)
+            return
+
+        net = self._net_position(sec)
+        if net is None:
+            if reason == "stop":
+                log.warning("выход stop: позиция не читается — рыночное закрытие НЕ шлю "
+                            "(брокерский стоп мог уже закрыть; сверь вручную).")
+                self._emit("error", {"text": "выход stop: позиция не подтверждена — сверь вручную"})
+            else:
+                log.error("закрытие %s: позиция не читается — шлю рыночное вслепую на %d, сверь вручную.",
+                          reason, expected_qty)
+                self._emit("error", {"text": f"закрытие {reason}: позиция не читается, закрываю вслепую"})
+                self._send_flat_raw(sec, position_side, expected_qty, reason)
+            return
+
+        if net == 0:
+            log.info("закрытие (%s): позиция уже плоская (net=0) — рыночное закрытие не требуется.", reason)
+            return
+
+        for attempt in range(1, self.close_retries + 1):
+            real_side = "long" if net > 0 else "short"
+            real_qty = abs(net)
+            orb_broker_quik.send_flat_market_order(self.qp, cfg["account"], cfg["class_code"], sec,
+                                                    position_side=real_side, qty=real_qty,
+                                                    client_code=cfg.get("client_code", ""))
+            ok, actual = self._confirm_net(sec, 0)
+            if ok:
+                log.info("закрытие (%s) подтверждено: позиция 0 (попытка %d).", reason, attempt)
+                return
+            log.error("закрытие (%s): позиция всё ещё %s после попытки %d/%d — повтор.",
+                      reason, actual, attempt, self.close_retries)
+            if actual is not None:
+                net = actual
+        log.error("КРИТИЧНО: %s не закрыт после %d попыток (net=%s) — ТРЕБУЕТСЯ РУЧНОЕ ВМЕШАТЕЛЬСТВО.",
+                  sec, self.close_retries, net)
+        self._emit("error", {"text": f"ПОЗИЦИЯ НЕ ЗАКРЫТА ({reason}) за {self.close_retries} попыток — закрой вручную!"})
+
+    def _send_flat_raw(self, sec: str, position_side: str, qty: int, reason: str) -> None:
+        """Рыночное закрытие вслепую (старое поведение) — только при verify=false
+        или когда позицию не удалось прочитать."""
         if qty <= 0:
             return
-        r = orb_broker_quik.send_flat_market_order(self.qp, cfg["account"], cfg["class_code"], sec, qty=qty,
-                                                    position_side=position_side, client_code=cfg.get("client_code", ""))
-        log.info("закрытие позиции (%s) отправлено: %s", reason, r)
+        r = orb_broker_quik.send_flat_market_order(self.qp, self.cfg["account"], self.cfg["class_code"], sec,
+                                                    qty=qty, position_side=position_side,
+                                                    client_code=self.cfg.get("client_code", ""))
+        log.info("закрытие позиции (%s) отправлено [без сверки]: %s", reason, r)
 
 
 def _next_wake(now: datetime, tf: int, delay: float) -> datetime:

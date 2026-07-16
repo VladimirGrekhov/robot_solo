@@ -9,7 +9,12 @@ orb_broker_quik.py — отправка заявок ORB через QuikPy (QLUA
      (в опубликованной QuikPy Чинарова он есть; при другой версии — поправь _send);
   2. прогнать на paper и глазами свериться, что заявки в QUIK выглядят ожидаемо;
   3. стоп — ВСЕГДА настоящая стоп-заявка в терминале (send_stop_order), а не
-     программный стоп: если робот упадёт, позиция должна остаться защищённой.
+     программный стоп: если робот упадёт, позиция должна остаться защищённой;
+  4. сверка исполнения (execution.verify в конфиге) требует, чтобы у qp работали
+     get_futures_holding (чтение позиции, см. orb_account.read_position) и
+     get_stop_orders (список стопов, см. active_stop_orders ниже) — имена/поля
+     зависят от версии QuikPy, проверь на своём терминале; если методов нет,
+     сверка деградирует до старого поведения (заявки вслепую) с предупреждением.
 """
 
 from __future__ import annotations
@@ -97,6 +102,56 @@ def kill_stop_order(qp, class_code: str, sec_code: str, stop_order_num: int) -> 
     transaction = {"ACTION": "KILL_STOP_ORDER", "CLASSCODE": class_code, "SECCODE": sec_code,
                    "STOP_ORDER_KEY": str(stop_order_num), "TRANS_ID": str(trans_id)}
     return _send(qp, transaction, trans_id)
+
+
+def active_stop_orders(qp, class_code: str, sec_code: str) -> list[int] | None:
+    """Номера АКТИВНЫХ стоп-заявок по контракту (best-effort через qp.get_stop_orders()).
+
+    None — прочитать не удалось (метод недоступен/ошибка); [] — активных стопов нет.
+    Активным считаем стоп с flags без бита снятия/исполнения (bit0 — активна в QUIK)."""
+    getter = getattr(qp, "get_stop_orders", None)
+    if getter is None:
+        return None
+    try:
+        res = getter()
+    except Exception as e:  # noqa: BLE001
+        log.warning("get_stop_orders() упал: %r", e)
+        return None
+    data = res.get("data") if isinstance(res, dict) and "data" in res else res
+    if not isinstance(data, list):
+        return None
+    nums: list[int] = []
+    for so in data:
+        if not isinstance(so, dict):
+            continue
+        if so.get("sec_code") != sec_code or (class_code and so.get("class_code") not in (class_code, None)):
+            continue
+        flags = int(so.get("flags", 0) or 0)
+        active = bool(flags & 0x1)  # бит0 выставлен — заявка активна (не снята/не исполнена)
+        num = so.get("order_num") or so.get("stop_order_num") or so.get("number")
+        if active and num is not None:
+            try:
+                nums.append(int(num))
+            except (TypeError, ValueError):
+                pass
+    return nums
+
+
+def cancel_stops(qp, class_code: str, sec_code: str) -> int | None:
+    """Снимает все активные стоп-заявки по контракту. Возвращает число снятых,
+    или None если список активных стопов прочитать не удалось (нельзя гарантировать
+    отмену — вызывающий код обязан предупредить о возможном висящем стопе)."""
+    nums = active_stop_orders(qp, class_code, sec_code)
+    if nums is None:
+        return None
+    killed = 0
+    for num in nums:
+        r = kill_stop_order(qp, class_code, sec_code, num)
+        if r.ok:
+            killed += 1
+        else:
+            log.warning("не удалось снять стоп-заявку %s: %r", num, r)
+    return killed
 
 
 def _send(qp, transaction: dict, trans_id: int) -> OrderResult:

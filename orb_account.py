@@ -94,6 +94,39 @@ def read_account(qp, firm_id=None, trdacc=None, currency: str = "SUR") -> dict |
     }
 
 
+def read_position(qp, sec_code: str, firm_id=None, trdacc=None) -> int | None:
+    """Фактическая ЧИСТАЯ позиция по контракту sec_code из QUIK. READ-ONLY.
+
+    >0 — длинная (лонг) на N контрактов, <0 — короткая, 0 — плоско.
+    None — прочитать не удалось (метод недоступен / ошибка / нет счёта): вызывающий
+    код обязан трактовать None как «неизвестно» и действовать консервативно.
+
+    Источник — get_futures_holding(firm, trdacc, sec, limit_type=0), поле totalnet.
+    ВНИМАНИЕ: имя метода/поля зависит от версии QuikPy — проверь на своём терминале
+    (тот же дисклеймер, что и у get_futures_limit в этом модуле)."""
+    if firm_id is None or trdacc is None:
+        firm_id, trdacc = find_futures_account(qp)
+    if not firm_id or not trdacc:
+        return None
+    getter = getattr(qp, "get_futures_holding", None)
+    if getter is None:
+        return None
+    try:
+        res = getter(firm_id, trdacc, sec_code, 0)
+    except Exception:  # noqa: BLE001
+        return None
+    data = res.get("data") if isinstance(res, dict) and "data" in res else res
+    if _looks_empty(data):
+        return None
+    for key in ("totalnet", "total_net", "net"):
+        if key in data:
+            try:
+                return int(round(float(data[key])))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def format_account(snap: dict | None, mask_secrets: bool = True) -> list[str]:
     """Строки карточки средств — единый источник для лога и окна."""
     if snap is None:
