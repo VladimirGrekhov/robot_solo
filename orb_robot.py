@@ -642,6 +642,12 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
     # разметка сегодняшних баров (если робот запущен посреди дня) — реплей БЕЗ реальных заявок,
     # только чтобы восстановить диапазон/флаги/(предположительную) открытую позицию
     all_candles = _load_recent(qp, tag, want=None)
+    no_data = not all_candles
+    if no_data:
+        log.error("НЕТ СВЕЧЕЙ по тегу '%s' — график с этим тегом не открыт в QUIK или тег переименован. "
+                  "Робот не получает данных и торговать не будет — проверь график.", tag)
+        if on_event:
+            on_event("error", {"text": f"нет свечей по тегу '{tag}' — график не открыт/переименован"})
     todays = [c for c in all_candles if (_bar_dt(c) or datetime.min).date() == today]
     for c in todays[:-1] if todays else []:
         b = _to_bar(c)
@@ -679,7 +685,18 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
             if on_event:
                 on_event("wake", {"time": datetime.now().strftime("%H:%M:%S")})
             candles = _load_recent(qp, tag, want=max(80, 5))
-            closed = candles[:-1] if candles else []
+            if not candles:
+                if not no_data:
+                    log.error("НЕТ СВЕЖИХ СВЕЧЕЙ по тегу '%s' — график пропал/переименован. "
+                              "Робот без данных, входы невозможны — проверь график в QUIK.", tag)
+                    if on_event:
+                        on_event("error", {"text": f"нет свечей по тегу '{tag}' — проверь график в QUIK"})
+                    no_data = True
+                continue
+            if no_data:
+                log.info("Свечи по тегу '%s' снова поступают — данные восстановлены.", tag)
+                no_data = False
+            closed = candles[:-1]
             new = [c for c in closed if (_bar_dt(c) or datetime.min) > (last_dt or datetime.min)]
             for c in new:
                 b = _to_bar(c)
