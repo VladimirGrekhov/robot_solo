@@ -642,7 +642,7 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
     # разметка сегодняшних баров (если робот запущен посреди дня) — реплей БЕЗ реальных заявок,
     # только чтобы восстановить диапазон/флаги/(предположительную) открытую позицию
     all_candles = _load_recent(qp, tag, want=None)
-    no_data = not all_candles
+    no_data = len(all_candles) < 2          # нет закрытых баров = тег пуст/переименован (как в QUIK-бэктесте)
     if no_data:
         log.error("НЕТ СВЕЧЕЙ по тегу '%s' — график с этим тегом не открыт в QUIK или тег переименован. "
                   "Робот не получает данных и торговать не будет — проверь график.", tag)
@@ -685,7 +685,7 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
             if on_event:
                 on_event("wake", {"time": datetime.now().strftime("%H:%M:%S")})
             candles = _load_recent(qp, tag, want=max(80, 5))
-            if not candles:
+            if len(candles) < 2:            # нет закрытых баров = тег пуст/переименован
                 if not no_data:
                     log.error("НЕТ СВЕЖИХ СВЕЧЕЙ по тегу '%s' — график пропал/переименован. "
                               "Робот без данных, входы невозможны — проверь график в QUIK.", tag)
