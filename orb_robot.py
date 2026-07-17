@@ -246,6 +246,8 @@ class OrbOrchestrator:
         self.skips_path = HERE / p["skips_csv"]
         self._volwin: deque = deque(maxlen=8)  # скользящий объём для rel_vol (теневые фильтры)
         self._vol_day = None
+        self._daily_ranges: deque = deque(maxlen=10)  # отн. дневной диапазон прошлых дней, % (режим волат.)
+        self._day_hl = None                    # (high, low, close) текущего дня — копится по барам
         self.kill_dir = HERE / cfg.get("kill_switch_dir", ".")
         self.open_meta: dict | None = None
         self.pending_entry: orb_strategy.EntrySignal | None = None
@@ -455,11 +457,28 @@ class OrbOrchestrator:
         base = sum(self._volwin) / len(self._volwin) if self._volwin else 0.0
         return (bar.volume / base) if base > 0 else 1.0
 
+    def _regime_vol(self):
+        """Режим волатильности = среднее отн. дневного диапазона за прошлые дни, %.
+        None, если истории мало (<5 дней) — фильтр в этом случае не блокирует."""
+        if len(self._daily_ranges) < 5:
+            return None
+        return sum(self._daily_ranges) / len(self._daily_ranges)
+
     def handle_bar(self, bar: orb_strategy.Bar, replay: bool = False) -> None:
         day = bar.dt.date()
-        if self._vol_day != day:          # скользящее окно объёма — по дню
+        if self._vol_day != day:          # смена дня: финализируем диапазон прошлого дня
+            if self._day_hl is not None:
+                hi, lo, cl = self._day_hl
+                if cl > 0:
+                    self._daily_ranges.append((hi - lo) / cl * 100.0)
             self._vol_day = day
             self._volwin.clear()
+            self._day_hl = None
+        if self._day_hl is None:
+            self._day_hl = (bar.high, bar.low, bar.close)
+        else:
+            h, l, _ = self._day_hl
+            self._day_hl = (max(h, bar.high), min(l, bar.low), bar.close)
         self._volwin.append(bar.volume)
         if orb_risk.kill_switch_active(self.kill_dir):
             if not self.halted_by_kill_switch:
@@ -561,9 +580,11 @@ class OrbOrchestrator:
             if self.entry_filter is not None:
                 rel = self._rel_volume(bar)
                 rw = result.entry.range_high - result.entry.range_low
-                if not self.entry_filter(result.entry.side, bar, rel, rw):
-                    log.info("[%s] вход %s отфильтрован (rel_vol=%.2f, ширина=%.0f)",
-                             self.name or "champ", result.entry.side, rel, rw)
+                regime = self._regime_vol()
+                if not self.entry_filter(result.entry.side, bar, rel, rw, regime):
+                    log.info("[%s] вход %s отфильтрован (rel_vol=%.2f, ширина=%.0f, режим=%s)",
+                             self.name or "champ", result.entry.side, rel, rw,
+                             f"{regime:.2f}%" if regime is not None else "н/д")
                     if not replay:
                         orb_journal.append_skip(self.skips_path, bar.dt, result.entry.side, "filtered")
                     result = _replace(result, entry=None)  # не открываем
@@ -716,21 +737,24 @@ def _next_wake(now: datetime, tf: int, delay: float) -> datetime:
 
 
 def make_entry_filter(spec: dict):
-    """Строит фильтр входа теневого варианта из спецификации. Ключи:
+    """Строит фильтр входа теневого варианта из спецификации. Ключи (все опц.):
     min_rel_volume / max_rel_volume — по относительному объёму пробойного бара;
     entry_before ('HH:MM') — не входить после времени; range_min / range_max —
-    по ширине диапазона (пунктов). Возвращает callable(side, bar, rel_vol,
-    range_width)->bool (True=разрешить) или None, если спецификация пуста."""
+    по ширине диапазона (пунктов); regime_min / regime_max — по режиму
+    волатильности (трейлинг отн. дневной диапазон, %; напр. regime_max: 2.0 —
+    стоять в высоковолатильном режиме). Возвращает callable(side, bar, rel_vol,
+    range_width, regime_vol)->bool (True=разрешить) или None, если спецификация пуста."""
     if not spec:
         return None
     mnv, mxv = spec.get("min_rel_volume"), spec.get("max_rel_volume")
     rmn, rmx = spec.get("range_min"), spec.get("range_max")
+    gmn, gmx = spec.get("regime_min"), spec.get("regime_max")
     eb_t = None
     if spec.get("entry_before"):
         hh, mm = str(spec["entry_before"]).split(":")
         eb_t = _dtime(int(hh), int(mm))
 
-    def _f(side, bar, rel_vol, range_width):
+    def _f(side, bar, rel_vol, range_width, regime_vol):
         if mnv is not None and rel_vol < mnv:
             return False
         if mxv is not None and rel_vol > mxv:
@@ -741,6 +765,12 @@ def make_entry_filter(spec: dict):
             return False
         if rmx is not None and range_width > rmx:
             return False
+        # режим известен только при достаточной истории (иначе regime_vol=None -> не блокируем)
+        if regime_vol is not None:
+            if gmn is not None and regime_vol < gmn:
+                return False
+            if gmx is not None and regime_vol >= gmx:
+                return False
         return True
     return _f
 

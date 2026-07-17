@@ -18,24 +18,32 @@ def test_empty_spec_no_filter():
 def test_min_rel_volume():
     f = orb_robot.make_entry_filter({"min_rel_volume": 1.5})
     bar = S.Bar(datetime(2026, 7, 16, 11, 0), 1, 1, 1, 1, 100)
-    assert f("long", bar, 2.0, 300) is True     # объём достаточный
-    assert f("long", bar, 1.0, 300) is False    # объём мал
+    assert f("long", bar, 2.0, 300, None) is True     # объём достаточный
+    assert f("long", bar, 1.0, 300, None) is False    # объём мал
 
 
 def test_entry_before():
     f = orb_robot.make_entry_filter({"entry_before": "15:00"})
     early = S.Bar(datetime(2026, 7, 16, 12, 0), 1, 1, 1, 1)
     late = S.Bar(datetime(2026, 7, 16, 16, 0), 1, 1, 1, 1)
-    assert f("long", early, 1.0, 300) is True
-    assert f("long", late, 1.0, 300) is False
+    assert f("long", early, 1.0, 300, None) is True
+    assert f("long", late, 1.0, 300, None) is False
 
 
 def test_range_band():
     f = orb_robot.make_entry_filter({"range_min": 200, "range_max": 600})
     bar = S.Bar(datetime(2026, 7, 16, 11, 0), 1, 1, 1, 1)
-    assert f("long", bar, 1.0, 400) is True
-    assert f("long", bar, 1.0, 100) is False    # уже min
-    assert f("long", bar, 1.0, 900) is False    # шире max
+    assert f("long", bar, 1.0, 400, None) is True
+    assert f("long", bar, 1.0, 100, None) is False    # уже min
+    assert f("long", bar, 1.0, 900, None) is False    # шире max
+
+
+def test_regime_gate():
+    f = orb_robot.make_entry_filter({"regime_max": 2.0})   # стоять в высоковолат. режиме
+    bar = S.Bar(datetime(2026, 7, 16, 11, 0), 1, 1, 1, 1)
+    assert f("long", bar, 1.0, 300, 1.5) is True     # режим 1.5% < 2.0 — торгуем
+    assert f("long", bar, 1.0, 300, 2.5) is False    # режим 2.5% >= 2.0 — стоп
+    assert f("long", bar, 1.0, 300, None) is True    # истории мало — не блокируем
 
 
 # ---------- сборка теней ----------
