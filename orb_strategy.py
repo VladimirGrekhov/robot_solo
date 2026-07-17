@@ -35,6 +35,7 @@ class Bar:
     high: float
     low: float
     close: float
+    volume: float = 0.0        # объём бара (для теневых фильтров; 0 если недоступен)
 
 
 @dataclass(frozen=True)

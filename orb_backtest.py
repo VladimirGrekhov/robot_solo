@@ -110,7 +110,8 @@ def load_bars(cfg: BacktestConfig) -> list[orb_strategy.Bar]:
         df = orb_data_moex.load_contract_m15(ticker, seg_start, seg_end, cfg.cache_dir)
         for ts, row in df.iterrows():
             bars.append(orb_strategy.Bar(ts.to_pydatetime(), float(row["open"]),
-                                          float(row["high"]), float(row["low"]), float(row["close"])))
+                                          float(row["high"]), float(row["low"]), float(row["close"]),
+                                          float(row["volume"]) if "volume" in row else 0.0))
     bars.sort(key=lambda b: b.dt)
     return bars
 

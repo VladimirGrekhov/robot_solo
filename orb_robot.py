@@ -20,8 +20,9 @@ import logging
 import shutil
 import sys
 import time as _time
+from collections import deque
 from dataclasses import replace as _replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as _dtime, timedelta
 from pathlib import Path
 
 import yaml
@@ -118,8 +119,12 @@ def _to_bar(candle: dict) -> orb_strategy.Bar | None:
     dt = _bar_dt(candle)
     if dt is None:
         return None
+    try:
+        vol = float(candle.get("volume", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        vol = 0.0
     return orb_strategy.Bar(dt, float(candle["open"]), float(candle["high"]),
-                             float(candle["low"]), float(candle["close"]))
+                             float(candle["low"]), float(candle["close"]), vol)
 
 
 def _load_recent(qp, tag: str, want: int | None = None) -> list[dict]:
@@ -220,21 +225,27 @@ class OrbOrchestrator:
     live=True — при live_trading=True в конфиге реально шлёт заявки через orb_broker_quik.
     """
 
-    def __init__(self, cfg: dict, qp, live: bool, on_event=None):
+    def __init__(self, cfg: dict, qp, live: bool, on_event=None, name: str = "",
+                 entry_filter=None, paths: dict | None = None):
         self.cfg = cfg
         self.qp = qp
         self.live = live
         self.on_event = on_event
+        self.name = name                       # "" — чемпион; иначе теневой вариант
+        self.entry_filter = entry_filter       # callable(side, bar, rel_vol, range_width)->bool или None
         self.state = orb_strategy.OrbState()
         risk_cfg = cfg.get("risk", {})
         self.risk_cfg = orb_risk.RiskConfig(**risk_cfg) if risk_cfg else orb_risk.RiskConfig()
         strat_cfg = cfg.get("strategy", {})
         self.allow_position_flip = bool(strat_cfg.get("allow_position_flip", False))
         self.expiration_zone_mode = strat_cfg.get("expiration_zone_mode", "trading_days")
-        self.risk_path = HERE / cfg["paths"]["risk_state_json"]
+        p = paths or cfg["paths"]              # теневой вариант пишет в свои файлы
+        self.risk_path = HERE / p["risk_state_json"]
         self.risk_state = orb_risk.load_risk_state(self.risk_path)
-        self.trades_path = HERE / cfg["paths"]["trades_csv"]
-        self.skips_path = HERE / cfg["paths"]["skips_csv"]
+        self.trades_path = HERE / p["trades_csv"]
+        self.skips_path = HERE / p["skips_csv"]
+        self._volwin: deque = deque(maxlen=8)  # скользящий объём для rel_vol (теневые фильтры)
+        self._vol_day = None
         self.kill_dir = HERE / cfg.get("kill_switch_dir", ".")
         self.open_meta: dict | None = None
         self.pending_entry: orb_strategy.EntrySignal | None = None
@@ -439,8 +450,17 @@ class OrbOrchestrator:
         self.chart_block = False
         self.chart_block_reason = ""
 
+    def _rel_volume(self, bar: orb_strategy.Bar) -> float:
+        """Относительный объём бара = объём / средний объём окна (дня). 1.0 если нет базы."""
+        base = sum(self._volwin) / len(self._volwin) if self._volwin else 0.0
+        return (bar.volume / base) if base > 0 else 1.0
+
     def handle_bar(self, bar: orb_strategy.Bar, replay: bool = False) -> None:
         day = bar.dt.date()
+        if self._vol_day != day:          # скользящее окно объёма — по дню
+            self._vol_day = day
+            self._volwin.clear()
+        self._volwin.append(bar.volume)
         if orb_risk.kill_switch_active(self.kill_dir):
             if not self.halted_by_kill_switch:
                 log.warning("KILL SWITCH: файл STOP найден в %s — закрываю позиции и останавливаюсь.",
@@ -538,7 +558,17 @@ class OrbOrchestrator:
             self.open_meta = None
 
         if result.entry is not None:
-            self.pending_entry = result.entry
+            if self.entry_filter is not None:
+                rel = self._rel_volume(bar)
+                rw = result.entry.range_high - result.entry.range_low
+                if not self.entry_filter(result.entry.side, bar, rel, rw):
+                    log.info("[%s] вход %s отфильтрован (rel_vol=%.2f, ширина=%.0f)",
+                             self.name or "champ", result.entry.side, rel, rw)
+                    if not replay:
+                        orb_journal.append_skip(self.skips_path, bar.dt, result.entry.side, "filtered")
+                    result = _replace(result, entry=None)  # не открываем
+            if result.entry is not None:
+                self.pending_entry = result.entry
 
         if result.skip is not None:
             specific = reason if result.skip.reason == "blocked" and reason else result.skip.reason
@@ -685,6 +715,53 @@ def _next_wake(now: datetime, tf: int, delay: float) -> datetime:
     return boundary + timedelta(seconds=delay)
 
 
+def make_entry_filter(spec: dict):
+    """Строит фильтр входа теневого варианта из спецификации. Ключи:
+    min_rel_volume / max_rel_volume — по относительному объёму пробойного бара;
+    entry_before ('HH:MM') — не входить после времени; range_min / range_max —
+    по ширине диапазона (пунктов). Возвращает callable(side, bar, rel_vol,
+    range_width)->bool (True=разрешить) или None, если спецификация пуста."""
+    if not spec:
+        return None
+    mnv, mxv = spec.get("min_rel_volume"), spec.get("max_rel_volume")
+    rmn, rmx = spec.get("range_min"), spec.get("range_max")
+    eb_t = None
+    if spec.get("entry_before"):
+        hh, mm = str(spec["entry_before"]).split(":")
+        eb_t = _dtime(int(hh), int(mm))
+
+    def _f(side, bar, rel_vol, range_width):
+        if mnv is not None and rel_vol < mnv:
+            return False
+        if mxv is not None and rel_vol > mxv:
+            return False
+        if eb_t is not None and bar.dt.time() >= eb_t:
+            return False
+        if rmn is not None and range_width < rmn:
+            return False
+        if rmx is not None and range_width > rmx:
+            return False
+        return True
+    return _f
+
+
+def build_shadows(cfg: dict, qp) -> list:
+    """Теневые варианты из cfg['shadow_variants']: параллельный расчёт на тех же
+    барах, свои журналы (logs/shadow_<name>_*), НИКОГДА не шлют заявки (live=False),
+    охрана графика выключена (доверяют данным чемпиона)."""
+    shadows = []
+    for v in cfg.get("shadow_variants", []) or []:
+        name = v["name"]
+        scfg = dict(cfg)
+        scfg["chart_guard"] = {"enabled": False}
+        paths = {"risk_state_json": f"logs/shadow_{name}_risk.json",
+                 "trades_csv": f"logs/shadow_{name}_trades.csv",
+                 "skips_csv": f"logs/shadow_{name}_skips.csv"}
+        shadows.append(OrbOrchestrator(scfg, qp, live=False, on_event=None, name=name,
+                                       entry_filter=make_entry_filter(v.get("filter", {})), paths=paths))
+    return shadows
+
+
 def _account_payload(snap: dict | None) -> dict:
     if snap is None:
         return {"ok": False, "lines": orb_account.format_account(None)}
@@ -749,6 +826,9 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
                  "работает сверка по цене/свежести последнего бара.", tag)
 
     orch = OrbOrchestrator(cfg, qp, live, on_event=on_event)
+    shadows = build_shadows(cfg, qp)          # теневые варианты (paper, свои журналы, без заявок)
+    if shadows:
+        log.info("Теневые варианты (форвард-тест, без заявок): %s", ", ".join(s.name for s in shadows))
 
     def _stopped():
         return stop_event is not None and stop_event.is_set()
@@ -762,6 +842,8 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
         b = _to_bar(c)
         if b:
             orch.handle_bar(b, replay=True)
+            for s in shadows:
+                s.handle_bar(b, replay=True)
     if orch.state.position is not None and not (live and orch.verify_exec):
         # в live+verify реальную позицию подхватит adopt_live_position ниже; здесь — только paper/verify-off
         log.warning("ВНИМАНИЕ: по разметке сегодняшней истории должна быть открытая позиция %s — "
@@ -825,6 +907,8 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
                 b = _to_bar(c)
                 if b:
                     orch.handle_bar(b, replay=False)
+                    for s in shadows:
+                        s.handle_bar(b, replay=False)
                     last_dt = b.dt
             if orch.halted_by_kill_switch:
                 log.warning("Остановлен kill switch'ем.")
