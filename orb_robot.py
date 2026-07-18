@@ -274,6 +274,11 @@ class OrbOrchestrator:
         self.go_min = float(sz.get("go_min_rub", 3000.0))
         self.go_max = float(sz.get("go_max_rub", 100000.0))
         self.equity_min = float(sz.get("equity_min_rub", 10000.0))
+        # издержки для honest live/paper PnL (пункт 1): та же модель, что в бэктесте
+        bt_cfg = cfg.get("backtest", {})
+        self.commission_side = float(bt_cfg.get("commission_per_side_rub", 5.0))
+        self.slippage_ticks = int(bt_cfg.get("slippage_ticks", 2))
+        self.tick_size = float(cfg.get("tick_size", 1.0))
 
     def _emit(self, kind: str, data: dict) -> None:
         if self.on_event:
@@ -600,13 +605,22 @@ class OrbOrchestrator:
                                     "bar": bar.dt.isoformat(sep=" ")})
 
     def _close_trade(self, bar: orb_strategy.Bar, exit_sig: orb_strategy.ExitSignal) -> orb_journal.TradeRecord:
+        """PnL с издержками (пункт 1): слиппедж на вход и выход + комиссия на обе
+        стороны — та же модель, что в бэктесте, чтобы журнал не завышал результат.
+        В live это приближение (реальные фил/комиссию из QUIK не читаем), но честнее
+        идеализированного нуля. Ставим slippage_ticks/commission_per_side_rub=0 в
+        секции backtest, если издержки учитывать не нужно."""
         m = self.open_meta
         long = m["side"] == "long"
-        pnl_pt = (exit_sig.price - m["entry_price"]) if long else (m["entry_price"] - exit_sig.price)
-        pnl_rub = pnl_pt * m["rub_per_point"] * m["qty"]  # без комиссии/слиппеджа — это paper/live, не бэктест
+        slip = self.slippage_ticks * self.tick_size
+        entry_eff = m["entry_price"] + (slip if long else -slip)   # вход хуже на слиппедж
+        exit_eff = (exit_sig.price - slip) if long else (exit_sig.price + slip)
+        pnl_pt = (exit_eff - entry_eff) if long else (entry_eff - exit_eff)
+        commission = self.commission_side * m["qty"] * 2
+        pnl_rub = pnl_pt * m["rub_per_point"] * m["qty"] - commission
         return orb_journal.TradeRecord(
             datetime_in=m["entry_time"], datetime_out=bar.dt, dir=m["side"], qty=m["qty"],
-            entry=m["entry_price"], exit=exit_sig.price, stop=m["stop_price"],
+            entry=entry_eff, exit=exit_eff, stop=m["stop_price"],
             pnl_pt=pnl_pt, pnl_rub=pnl_rub, exit_reason=exit_sig.reason,
             range_width_pt=m["range_width"], event_flags="")
 
