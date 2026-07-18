@@ -246,6 +246,12 @@ class App(tk.Tk):
         ("allow_position_flip", "Разрешить разворот позиции (как в эталонном Pine)", bool),
         ("expiration_zone_mode", "Зона экспирации", ["trading_days", "calendar_days"]),
     ]
+    SIZING_FIELDS = [
+        ("from_live_equity", "Размер от живого equity из QUIK (иначе от депозита)", bool),
+        ("go_min_rub", "ГО: мин. правдоподобное, ₽ (ниже — фолбэк)", float),
+        ("go_max_rub", "ГО: макс. правдоподобное, ₽ (выше — фолбэк)", float),
+        ("equity_min_rub", "Мин. equity, ₽ (ниже — сайзинг от депозита)", float),
+    ]
     TOP_FIELDS = [
         ("deposit_rub", "Депозит, ₽ (для сайзинга позиции)", float),
         ("chart_tag", "Тег M15-графика в QUIK", str),
@@ -285,6 +291,13 @@ class App(tk.Tk):
                  bg=BG, fg=FG, font=FONT_BOLD).pack(anchor="w", padx=12, pady=(14, 4))
         self._build_fields(form_host, self.STRATEGY_FIELDS, self.cfg.get("strategy", {}), prefix="strategy.")
 
+        tk.Label(form_host, text="Сайзинг (sizing:) — защита от мусорных чтений ГО + опц. размер от equity",
+                 bg=BG, fg=FG, font=FONT_BOLD).pack(anchor="w", padx=12, pady=(14, 4))
+        sizing_src = {"from_live_equity": False, "go_min_rub": 3000.0,
+                      "go_max_rub": 100000.0, "equity_min_rub": 10000.0}
+        sizing_src.update(self.cfg.get("sizing", {}))     # дефолты, если секции в конфиге нет
+        self._build_fields(form_host, self.SIZING_FIELDS, sizing_src, prefix="sizing.")
+
         bar = tk.Frame(form_host, bg=BG)
         bar.pack(fill="x", padx=12, pady=16)
         tk.Button(bar, text="Сохранить", command=self._save_settings, bg=ACCENT, fg=FG,
@@ -323,7 +336,7 @@ class App(tk.Tk):
         form.columnconfigure(0, weight=1)
 
     def _save_settings(self):
-        new_top, new_risk, new_strategy = {}, {}, {}
+        new_top, new_risk, new_strategy, new_sizing = {}, {}, {}, {}
         for full_key, (var, typ) in self._setting_vars.items():
             if isinstance(typ, list):
                 val = var.get()
@@ -346,6 +359,8 @@ class App(tk.Tk):
                 new_risk[full_key[len("risk."):]] = val
             elif full_key.startswith("strategy."):
                 new_strategy[full_key[len("strategy."):]] = val
+            elif full_key.startswith("sizing."):
+                new_sizing[full_key[len("sizing."):]] = val
             else:
                 new_top[full_key] = val
 
@@ -360,6 +375,7 @@ class App(tk.Tk):
         self.cfg.update(new_top)
         self.cfg.setdefault("risk", {}).update(new_risk)
         self.cfg.setdefault("strategy", {}).update(new_strategy)
+        self.cfg.setdefault("sizing", {}).update(new_sizing)
         self.cfg["live_trading"] = live
         self.cfg["mode"] = "live" if live else "paper"
         self.cfg["window_geometry"] = self.geometry()
