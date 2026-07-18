@@ -434,8 +434,12 @@ class OrbOrchestrator:
                              f"на {dev:.1f}% (>{self.chart_tol_pct:g}%)")
                 return
 
-        age_min = (( now or datetime.now()) - bar.dt).total_seconds() / 60.0
-        if age_min > self.chart_max_age_min:
+        # свежесть проверяем только в окне торгов (10:00-18:45): вне сессии свежих
+        # баров и не ждём, иначе вечером/на выходных ложная тревога
+        now_dt = now or datetime.now()
+        age_min = (now_dt - bar.dt).total_seconds() / 60.0
+        in_session = _dtime(10, 0) <= now_dt.time() <= _dtime(18, 45)
+        if in_session and age_min > self.chart_max_age_min:
             self._set_chart_block(
                 "stale", f"последний бар графика {bar.dt} старше {self.chart_max_age_min:g} мин "
                          f"(возможно, истёкший/неверный контракт)")

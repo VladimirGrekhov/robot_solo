@@ -70,9 +70,19 @@ def test_price_deviation_blocks(tmp_path):
 def test_stale_bar_blocks(tmp_path):
     orch = make_orch(tmp_path, FakeQuik(last=78000.0))
     b = bar(78000.0)                              # цена совпадает, но бар старый
+    # now в окне торгов (14:15 + 90м = 15:45) -> свежесть срабатывает
     orch._evaluate_chart(b, "SiU6", now=b.dt + timedelta(minutes=90))
     assert orch.chart_block is True
     assert orch.chart_block_reason == "stale"
+
+
+def test_stale_bar_outside_session_no_block(tmp_path):
+    from datetime import datetime
+    orch = make_orch(tmp_path, FakeQuik(last=78000.0))
+    b = bar(78000.0)                              # цена совпадает, бар старый
+    # now ВНЕ окна торгов (21:00) -> свежесть НЕ блокирует (вне сессии баров и не ждём)
+    orch._evaluate_chart(b, "SiU6", now=datetime(2026, 7, 16, 21, 0))
+    assert orch.chart_block is False
 
 
 def test_exact_sec_match_authoritative(tmp_path):
