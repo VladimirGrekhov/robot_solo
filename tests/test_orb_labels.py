@@ -72,17 +72,21 @@ def test_raw_addlabel2_text():
     qp = RawQuik()
     n, err, diag = orb_robot.add_trade_labels(qp, "si15m", TRADES)
     assert err is None
-    assert n == 4                          # 2 метки на сделку
+    assert n == 6                          # 3 метки на сделку (вход, стоп, выход)
     assert qp.cleared == 1
-    assert len(qp.requests) == 4
+    assert len(qp.requests) == 6
     assert all(r["cmd"] == "addLabel2" for r in qp.requests)
     fields = [r["data"].split("|") for r in qp.requests]
     assert all(f[0] == "si15m" for f in fields)          # тег — первое поле
     texts = [f[4] for f in fields]                       # text — пятое поле
     assert "BUY" in texts and "SELL" in texts and "+600" in texts and "-400" in texts
+    assert any(t.startswith("SL ") for t in texts)       # метка стоп-лосса
     # вход-лонг зелёный (r,g,b на позициях 8,9,10)
     buy = fields[0]
-    assert (buy[8], buy[9], buy[10]) == ("0", "180", "0")
+    assert (buy[8], buy[9], buy[10]) == ("0", "200", "0")
+    # стоп-лосс лонга — оранжевый, на цене стопа (79500)
+    sl = fields[1]
+    assert sl[4] == "SL 79500" and (sl[8], sl[9], sl[10]) == ("255", "140", "0")
     assert "способ=addLabel2" in diag
 
 
@@ -91,9 +95,9 @@ def test_flat_signature_fallback_images():
     qp = FlatQuik()
     n, err, diag = orb_robot.add_trade_labels(qp, "si15m", TRADES)
     assert err is None
-    assert n == 4
+    assert n == 6
     assert qp.cleared == 1
-    assert len(qp.labels) == 4
+    assert len(qp.labels) == 6
     assert qp.labels[0][3] == "si15m"      # chart_tag подставлен правильно
     assert qp.labels[0][5].endswith(".bmp")   # картинка-маркер подставлена в path
     assert "способ=картинки" in diag
@@ -104,7 +108,7 @@ def test_dict_signature():
     qp = DictQuik()
     n, err, diag = orb_robot.add_trade_labels(qp, "si15m", TRADES)
     assert err is None
-    assert n == 4
+    assert n == 6
     assert all("TEXT" in p and "YVALUE" in p for p in qp.labels)
 
 

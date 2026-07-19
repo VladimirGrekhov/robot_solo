@@ -235,7 +235,8 @@ def _make_bmp(path, rgb: tuple, size: int = 9) -> None:
 
 def _ensure_label_icons():
     """Создаёт (если нет) цветные картинки-маркеры и возвращает {имя: абс.путь}."""
-    colors = {"buy": (0, 170, 0), "sell": (210, 0, 0), "win": (0, 110, 220), "loss": (230, 140, 0)}
+    colors = {"buy": (0, 200, 0), "sell": (210, 0, 0), "stop": (255, 140, 0),
+              "win": (0, 110, 220), "loss": (230, 140, 0)}
     d = HERE / "label_icons"
     try:
         d.mkdir(exist_ok=True)
@@ -310,16 +311,19 @@ def _add_one_label(add, tag, dt, price, align, image, params):
 
 
 def _trade_marks(tr):
-    """Две метки на сделку: вход (BUY/SELL, зелёный/красный) и выход (PnL, зелёный/красный).
-    Возвращает список (dt, price, text, rgb, align, icon_key)."""
+    """Три метки на сделку: вход (BUY зелёный / SELL красный), стоп-лосс (SL оранжевый,
+    на цене стопа) и выход (PnL, зелёный/красный). Возвращает список
+    (dt, price, text, rgb, align, icon_key). Стоп у лонга снизу, у шорта сверху."""
     long = tr.dir == "long"
     win = tr.pnl_rub > 0
     return [
         (tr.datetime_in, tr.entry, "BUY" if long else "SELL",
-         (0, 180, 0) if long else (255, 40, 40), "BOTTOM" if long else "TOP",
+         (0, 200, 0) if long else (210, 0, 0), "BOTTOM" if long else "TOP",
          "buy" if long else "sell"),
+        (tr.datetime_in, tr.stop, f"SL {tr.stop:.0f}",
+         (255, 140, 0), "BOTTOM" if long else "TOP", "stop"),
         (tr.datetime_out, tr.exit, f"{tr.pnl_rub:+.0f}",
-         (0, 180, 0) if win else (255, 40, 40), "TOP",
+         (0, 200, 0) if win else (210, 0, 0), "TOP",
          "win" if win else "loss"),
     ]
 
