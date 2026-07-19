@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import orb_robot
 import orb_journal
+import orb_strategy
 
 
 class RawQuik:
@@ -117,3 +118,17 @@ def test_unsupported():
     n, err, diag = orb_robot.add_trade_labels(NoLabels(), "si15m", TRADES)
     assert n == 0
     assert err is not None and "add_label" in err
+
+
+def test_color_probe():
+    """Столбик образцов цвета: по метке на каждый цвет палитры, все через addLabel2."""
+    qp = RawQuik()
+    bars = [orb_strategy.Bar(dt=datetime(2026, 7, 16, 11, 0), open=80000, high=80100,
+                             low=79900, close=80050, volume=1000)]
+    n, err = orb_robot.add_color_probe(qp, "si15m", bars)
+    assert err is None
+    assert n == len(orb_robot.COLOR_PROBE)
+    assert len(qp.requests) == n
+    texts = [r["data"].split("|")[4] for r in qp.requests]
+    assert any(t.startswith("yellow") for t in texts)
+    assert any(t.startswith("green") for t in texts)

@@ -416,6 +416,48 @@ def add_trade_labels(qp, tag: str, trades: list) -> tuple:
     return n, None, diag
 
 
+# Палитра для калибровки: как заданный RGB реально выглядит на графике QUIK.
+COLOR_PROBE = [
+    ("green",   (0, 200, 0)),
+    ("red",     (210, 0, 0)),
+    ("yellow",  (255, 255, 0)),
+    ("orange",  (255, 140, 0)),
+    ("blue",    (0, 110, 220)),
+    ("cyan",    (0, 200, 200)),
+    ("magenta", (200, 0, 200)),
+    ("lime",    (140, 220, 0)),
+    ("white",   (255, 255, 255)),
+    ("black",   (0, 0, 0)),
+    ("gray",    (128, 128, 128)),
+]
+
+
+def add_color_probe(qp, tag: str, bars: list) -> tuple:
+    """Столбик образцов цвета под последними свечами: каждая метка подписана именем
+    цвета и его RGB и нарисована этим же цветом. Нужен для калибровки — глазами
+    сверить, какой заданный RGB как выглядит на этом QUIK (у пользователя BUY (0,200,0)
+    выходит жёлтым). Возвращает (число_меток, ошибка|None)."""
+    pr = getattr(qp, "process_request", None)
+    if not callable(pr) or not bars:
+        return 0, "нужен process_request и бары"
+    lows = [float(b.low) for b in bars[-40:]]
+    highs = [float(b.high) for b in bars[-40:]]
+    span = (max(highs) - min(lows)) or (min(lows) * 0.01) or 100.0
+    step = span / max(len(COLOR_PROBE), 1)              # шаг вниз между образцами
+    top = min(lows) - step                              # старт — ниже последних свечей
+    dt = bars[-1].dt
+    n = 0
+    for i, (name, rgb) in enumerate(COLOR_PROBE):
+        y = top - i * step
+        try:
+            _add_label2(qp, tag, y, dt, f"{name} {rgb}", rgb, "RIGHT",
+                        hint=f"проба цвета: {name} = rgb{rgb}")
+            n += 1
+        except Exception as e:  # noqa: BLE001
+            return n, repr(e)
+    return n, None
+
+
 class OrbOrchestrator:
     """Общая логика обработки одного закрытого бара для paper и live.
 
