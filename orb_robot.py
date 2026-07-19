@@ -417,18 +417,26 @@ def add_trade_labels(qp, tag: str, trades: list) -> tuple:
 
 
 # Палитра для калибровки: как заданный RGB реально выглядит на графике QUIK.
+# addLabel2 на этой сборке путает цвет из трёх полей r|g|b — подбираем нужный цвет
+# по факту (какой ВХОДНОЙ rgb ВЫГЛЯДИТ нужным цветом). Строки пронумерованы, чтобы
+# пользователь мог назвать номер строки, которая выглядит зелёной/красной/оранжевой.
 COLOR_PROBE = [
-    ("green",   (0, 200, 0)),
-    ("red",     (210, 0, 0)),
-    ("yellow",  (255, 255, 0)),
-    ("orange",  (255, 140, 0)),
-    ("blue",    (0, 110, 220)),
-    ("cyan",    (0, 200, 200)),
-    ("magenta", (200, 0, 200)),
-    ("lime",    (140, 220, 0)),
-    ("white",   (255, 255, 255)),
-    ("black",   (0, 0, 0)),
-    ("gray",    (128, 128, 128)),
+    ("green",    (0, 200, 0)),
+    ("red",      (210, 0, 0)),
+    ("orange",   (255, 140, 0)),
+    ("yellow",   (255, 255, 0)),
+    ("blue",     (0, 110, 220)),
+    ("navy",     (0, 0, 210)),
+    ("cyan",     (0, 200, 200)),
+    ("magenta",  (200, 0, 200)),
+    ("lime",     (140, 220, 0)),
+    ("teal",     (0, 150, 120)),
+    ("rose",     (220, 0, 90)),
+    ("amber",    (230, 190, 0)),
+    ("purple",   (150, 60, 220)),
+    ("white",    (255, 255, 255)),
+    ("black",    (0, 0, 0)),
+    ("gray",     (128, 128, 128)),
 ]
 
 
@@ -450,8 +458,8 @@ def add_color_probe(qp, tag: str, bars: list) -> tuple:
     for i, (name, rgb) in enumerate(COLOR_PROBE):
         y = top - i * step
         try:
-            _add_label2(qp, tag, y, dt, f"{name} {rgb}", rgb, "RIGHT",
-                        hint=f"проба цвета: {name} = rgb{rgb}")
+            _add_label2(qp, tag, y, dt, f"#{i + 1} {name} {rgb}", rgb, "RIGHT",
+                        hint=f"проба цвета #{i + 1}: {name} = rgb{rgb}")
             n += 1
         except Exception as e:  # noqa: BLE001
             return n, repr(e)
