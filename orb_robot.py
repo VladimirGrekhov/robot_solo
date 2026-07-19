@@ -305,6 +305,11 @@ def add_trade_labels(qp, tag: str, trades: list) -> tuple:
             break
     add = getattr(qp, "add_label", None) or getattr(qp, "AddLabel", None)
     diag = f"label-методы: {','.join(methods) or 'нет'}"
+    try:                                            # какие поля принимает add_label этой версии
+        sig = ",".join(p for p in inspect.signature(add).parameters if p != "self")
+        diag += f"; add_label({sig})"
+    except (TypeError, ValueError):
+        pass
     if add is None:
         return 0, "QuikPy не поддерживает add_label — метки недоступны на этой версии", diag
     setp = getattr(qp, "set_label_params", None) or getattr(qp, "SetLabelParams", None)
