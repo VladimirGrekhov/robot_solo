@@ -55,7 +55,7 @@ TRADES = [_trade("long", 80000, 80300, 600.0), _trade("short", 80000, 79800, -40
 
 def test_flat_signature_with_text():
     qp = FlatQuik()
-    n, err = orb_robot.add_trade_labels(qp, "si15m", TRADES)
+    n, err, diag = orb_robot.add_trade_labels(qp, "si15m", TRADES)
     assert err is None
     assert n == 4                          # 2 метки на сделку
     assert qp.cleared == 1
@@ -63,17 +63,18 @@ def test_flat_signature_with_text():
     assert qp.labels[0][3] == "si15m"      # chart_tag подставлен правильно
     texts = [p["TEXT"] for p in qp.text_params]
     assert "Buy" in texts and "Sell" in texts and "+600" in texts and "-400" in texts
+    assert "set_label_params=есть" in diag
 
 
 def test_dict_signature():
     qp = DictQuik()
-    n, err = orb_robot.add_trade_labels(qp, "si15m", TRADES)
+    n, err, diag = orb_robot.add_trade_labels(qp, "si15m", TRADES)
     assert err is None
     assert n == 4
     assert all("TEXT" in p and "YVALUE" in p for p in qp.labels)
 
 
 def test_unsupported():
-    n, err = orb_robot.add_trade_labels(NoLabels(), "si15m", TRADES)
+    n, err, diag = orb_robot.add_trade_labels(NoLabels(), "si15m", TRADES)
     assert n == 0
     assert err is not None and "add_label" in err

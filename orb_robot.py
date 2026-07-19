@@ -258,9 +258,11 @@ def _add_one_label(add, tag, dt, price, align, params):
 
 def add_trade_labels(qp, tag: str, trades: list) -> tuple:
     """Рисует метки входа/выхода сделок на графике QUIK по тегу (для визуального
-    разбора QUIK-бэктеста). Возвращает (число_меток, ошибка|None). Best-effort:
-    подстраивается под сигнатуру add_label версии QuikPy, текст/цвет — через
-    set_label_params, если он есть."""
+    разбора QUIK-бэктеста). Возвращает (число_меток, ошибка|None, диагностика).
+    Best-effort: подстраивается под сигнатуру add_label версии QuikPy, текст/цвет —
+    через set_label_params, если он есть. Диагностика (доступные методы, статус
+    set_label_params) нужна, чтобы подстроиться под конкретную версию."""
+    methods = [m for m in dir(qp) if "label" in m.lower()]
     for m in ("del_all_labels", "delete_all_labels", "DelAllLabels"):   # снять старые
         fn = getattr(qp, m, None)
         if fn is not None:
@@ -270,10 +272,13 @@ def add_trade_labels(qp, tag: str, trades: list) -> tuple:
                 pass
             break
     add = getattr(qp, "add_label", None) or getattr(qp, "AddLabel", None)
+    diag = f"label-методы: {','.join(methods) or 'нет'}"
     if add is None:
-        return 0, "QuikPy не поддерживает add_label — метки недоступны на этой версии"
+        return 0, "QuikPy не поддерживает add_label — метки недоступны на этой версии", diag
     setp = getattr(qp, "set_label_params", None) or getattr(qp, "SetLabelParams", None)
     n = 0
+    first_id = "?"
+    setp_err = None
     for tr in trades:
         long = tr.dir == "long"
         win = tr.pnl_rub > 0
@@ -285,15 +290,20 @@ def add_trade_labels(qp, tag: str, trades: list) -> tuple:
             params = _label_dict(dt, price, text, rgb, align)
             try:
                 lid = _add_one_label(add, tag, dt, price, align, params)
+                if first_id == "?":
+                    first_id = f"{lid!r} ({type(lid).__name__})"
                 n += 1
                 if setp is not None and lid is not None:   # текст/цвет отдельным вызовом
                     try:
                         setp(tag, lid, params)
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as e:  # noqa: BLE001
+                        setp_err = repr(e)
             except Exception as e:  # noqa: BLE001
-                return n, repr(e)
-    return n, None
+                return n, repr(e), diag
+    diag += f"; set_label_params={'есть' if setp else 'НЕТ'}; id1={first_id}"
+    if setp_err:
+        diag += f"; set упал: {setp_err}"
+    return n, None, diag
 
 
 class OrbOrchestrator:
