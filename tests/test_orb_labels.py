@@ -21,7 +21,7 @@ class FlatQuik:
         self.cleared += 1
 
     def add_label(self, price, cur_date, cur_time, qty, path, chart_tag, alignment, background):
-        self.labels.append((price, cur_date, cur_time, chart_tag, alignment))
+        self.labels.append((price, cur_date, cur_time, chart_tag, alignment, path))
         return {"data": len(self.labels)}
 
     def set_label_params(self, chart_tag, label_id, params):
@@ -61,9 +61,11 @@ def test_flat_signature_with_text():
     assert qp.cleared == 1
     assert len(qp.labels) == 4
     assert qp.labels[0][3] == "si15m"      # chart_tag подставлен правильно
+    assert qp.labels[0][5].endswith(".bmp")   # картинка-маркер подставлена в path
     texts = [p["TEXT"] for p in qp.text_params]
     assert "Buy" in texts and "Sell" in texts and "+600" in texts and "-400" in texts
     assert "set_label_params=есть" in diag
+    assert "иконки=есть" in diag
 
 
 def test_dict_signature():

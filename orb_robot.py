@@ -219,10 +219,41 @@ def chart_sec(qp, tag: str) -> str | None:
     return None
 
 
-def _label_dict(dt: datetime, price: float, text: str, rgb: tuple, align: str) -> dict:
-    """Полный набор параметров метки (QLUA SetLabelParams / dict-версия AddLabel)."""
+def _make_bmp(path, rgb: tuple, size: int = 9) -> None:
+    """Пишет крошечный BMP-квадрат сплошного цвета (24-bit, без сжатия) — маркер
+    для меток на графике QUIK (эта версия QuikPy показывает метку только картинкой)."""
+    import struct
+    r, g, b = rgb
+    row = bytes((b, g, r)) * size + b"\x00" * ((-size * 3) % 4)   # BGR + паддинг строки
+    pixels = row * size
+    file_size = 14 + 40 + len(pixels)
+    header = b"BM" + struct.pack("<IHHI", file_size, 0, 0, 54)
+    dib = struct.pack("<IiiHHIIiiII", 40, size, size, 1, 24, 0, len(pixels), 2835, 2835, 0, 0)
+    with open(path, "wb") as f:
+        f.write(header + dib + pixels)
+
+
+def _ensure_label_icons():
+    """Создаёт (если нет) цветные картинки-маркеры и возвращает {имя: абс.путь}."""
+    colors = {"buy": (0, 170, 0), "sell": (210, 0, 0), "win": (0, 110, 220), "loss": (230, 140, 0)}
+    d = HERE / "label_icons"
+    try:
+        d.mkdir(exist_ok=True)
+        out = {}
+        for name, rgb in colors.items():
+            p = d / f"{name}.bmp"
+            if not p.exists():
+                _make_bmp(p, rgb)
+            out[name] = str(p)
+        return out
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _label_dict(dt: datetime, price: float, text: str, rgb: tuple, align: str, image: str) -> dict:
+    """Полный набор параметров метки (для dict-версии AddLabel других версий QuikPy)."""
     return {
-        "TEXT": text, "IMAGE_PATH": "", "ALIGNMENT": align,
+        "TEXT": text, "IMAGE_PATH": image, "ALIGNMENT": align,
         "YVALUE": f"{price:.0f}", "DATE": dt.strftime("%Y%m%d"), "TIME": dt.strftime("%H%M%S"),
         "R": rgb[0], "G": rgb[1], "B": rgb[2],
         "TRANSPARENCY": 0, "TRANSPARENT_BACKGROUND": 1,
@@ -231,17 +262,17 @@ def _label_dict(dt: datetime, price: float, text: str, rgb: tuple, align: str) -
     }
 
 
-def _add_one_label(add, tag, dt, price, align, params):
-    """Вызывает add_label, подстраиваясь под сигнатуру версии QuikPy: dict-форма
-    add_label(tag, params) или позиционная (price, cur_date, cur_time, qty, path,
-    chart_tag, alignment, background). Возвращает id метки (или None)."""
+def _add_one_label(add, tag, dt, price, align, image, params):
+    """Вызывает add_label, подстраиваясь под сигнатуру версии QuikPy: позиционная
+    (price, cur_date, cur_time, qty, path, chart_tag, alignment, background) с
+    картинкой в path, либо dict-форма add_label(tag, params). Возвращает id."""
     values = {
         "chart_tag": tag, "tag": tag,
         "label_params": params, "labelparams": params, "label": params, "params": params,
         "price": f"{price:.0f}", "y_value": f"{price:.0f}", "yvalue": f"{price:.0f}",
         "cur_date": dt.strftime("%Y%m%d"), "date": dt.strftime("%Y%m%d"),
         "cur_time": dt.strftime("%H%M%S"), "time": dt.strftime("%H%M%S"),
-        "qty": 0, "path": "", "image_path": "",
+        "qty": 0, "path": image, "image_path": image,
         "alignment": align, "background": 0, "transparent_background": 1,
     }
     try:
@@ -262,7 +293,8 @@ def add_trade_labels(qp, tag: str, trades: list) -> tuple:
     Best-effort: подстраивается под сигнатуру add_label версии QuikPy, текст/цвет —
     через set_label_params, если он есть. Диагностика (доступные методы, статус
     set_label_params) нужна, чтобы подстроиться под конкретную версию."""
-    methods = [m for m in dir(qp) if "label" in m.lower()]
+    icons = _ensure_label_icons() or {}          # цветные картинки-маркеры (эта версия QUIK
+    methods = [m for m in dir(qp) if "label" in m.lower()]                     # рисует только их)
     for m in ("del_all_labels", "delete_all_labels", "DelAllLabels"):   # снять старые
         fn = getattr(qp, m, None)
         if fn is not None:
@@ -282,24 +314,28 @@ def add_trade_labels(qp, tag: str, trades: list) -> tuple:
     for tr in trades:
         long = tr.dir == "long"
         win = tr.pnl_rub > 0
+        # вход: зелёный (Buy) / красный (Sell); выход: синий (плюс) / оранжевый (минус)
         marks = [(tr.datetime_in, tr.entry, "Buy" if long else "Sell",
-                  (0, 160, 0) if long else (200, 0, 0), "BOTTOM" if long else "TOP"),
+                  (0, 160, 0) if long else (200, 0, 0), "BOTTOM" if long else "TOP",
+                  icons.get("buy" if long else "sell", "")),
                  (tr.datetime_out, tr.exit, f"{tr.pnl_rub:+.0f}",
-                  (0, 130, 0) if win else (190, 0, 0), "TOP")]
-        for dt, price, text, rgb, align in marks:
-            params = _label_dict(dt, price, text, rgb, align)
+                  (0, 110, 220) if win else (230, 140, 0), "TOP",
+                  icons.get("win" if win else "loss", ""))]
+        for dt, price, text, rgb, align, image in marks:
+            params = _label_dict(dt, price, text, rgb, align, image)
             try:
-                lid = _add_one_label(add, tag, dt, price, align, params)
+                lid = _add_one_label(add, tag, dt, price, align, image, params)
                 if first_id == "?":
                     first_id = f"{lid!r} ({type(lid).__name__})"
                 n += 1
-                if setp is not None and lid is not None:   # текст/цвет отдельным вызовом
+                if setp is not None and lid is not None:   # текст/цвет отдельным вызовом (др. версии)
                     try:
                         setp(tag, lid, params)
                     except Exception as e:  # noqa: BLE001
                         setp_err = repr(e)
             except Exception as e:  # noqa: BLE001
                 return n, repr(e), diag
+    diag += f"; иконки={'есть' if icons else 'НЕТ'}"
     diag += f"; set_label_params={'есть' if setp else 'НЕТ'}; id1={first_id}"
     if setp_err:
         diag += f"; set упал: {setp_err}"
