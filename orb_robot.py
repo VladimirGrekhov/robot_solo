@@ -218,6 +218,56 @@ def chart_sec(qp, tag: str) -> str | None:
     return None
 
 
+def _label_params(dt: datetime, price: float, text: str, rgb: tuple, align: str) -> dict:
+    """Параметры метки QUIK AddLabel (цена/дата/время/цвет/выравнивание)."""
+    return {
+        "TEXT": text, "IMAGE_PATH": "", "ALIGNMENT": align,
+        "YVALUE": f"{price:.0f}", "DATE": dt.strftime("%Y%m%d"), "TIME": dt.strftime("%H%M%S"),
+        "R": rgb[0], "G": rgb[1], "B": rgb[2],
+        "TRANSPARENCY": 0, "TRANSPARENT_BACKGROUND": 1,
+        "FONT_FACE_NAME": "Arial", "FONT_HEIGHT": "10",
+        "HINT": f"{dt:%Y-%m-%d %H:%M} · {text}",
+    }
+
+
+def add_trade_labels(qp, tag: str, trades: list) -> tuple:
+    """Рисует метки входа/выхода сделок на графике QUIK по тегу (для визуального
+    разбора QUIK-бэктеста). Возвращает (число_меток, ошибка|None). Best-effort:
+    имена методов QuikPy зависят от версии — если add_label нет, метки не ставятся."""
+    # снять старые метки, чтобы повторный прогон не накапливал
+    for m in ("del_all_labels", "delete_all_labels", "DelAllLabels"):
+        fn = getattr(qp, m, None)
+        if fn is not None:
+            try:
+                fn(tag)
+            except Exception:  # noqa: BLE001
+                pass
+            break
+    add = None
+    for m in ("add_label", "AddLabel"):
+        add = getattr(qp, m, None)
+        if add is not None:
+            break
+    if add is None:
+        return 0, "QuikPy не поддерживает add_label — метки недоступны на этой версии"
+    n = 0
+    for tr in trades:
+        long = tr.dir == "long"
+        entry_p = _label_params(tr.datetime_in, tr.entry, ("Buy" if long else "Sell"),
+                                (0, 160, 0) if long else (200, 0, 0),
+                                "BOTTOM" if long else "TOP")
+        win = tr.pnl_rub > 0
+        exit_p = _label_params(tr.datetime_out, tr.exit, f"{tr.pnl_rub:+.0f}",
+                               (0, 130, 0) if win else (190, 0, 0), "TOP")
+        for p in (entry_p, exit_p):
+            try:
+                add(tag, p)
+                n += 1
+            except Exception as e:  # noqa: BLE001
+                return n, repr(e)
+    return n, None
+
+
 class OrbOrchestrator:
     """Общая логика обработки одного закрытого бара для paper и live.
 

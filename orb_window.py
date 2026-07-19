@@ -567,6 +567,19 @@ class App(tk.Tk):
             )
             res = orb_backtest.run(b, bars=bars)
             log.info("Бэктест (QUIK): готово, сделок=%d.", res.summary["trades"])
+
+            # метки сделок на графике QUIK — для визуального разбора
+            try:
+                n_lbl, lbl_err = R.add_trade_labels(qp, tag, res.trades)
+            except Exception as e:  # noqa: BLE001
+                n_lbl, lbl_err = 0, repr(e)
+            if lbl_err:
+                log.warning("Бэктест (QUIK): метки не поставлены: %s", lbl_err)
+                label_line = f"Метки на графике: не поставлены ({lbl_err})"
+            else:
+                log.info("Бэктест (QUIK): меток на графике: %d.", n_lbl)
+                label_line = f"Метки на графике: {n_lbl} (Buy/Sell на входе, PnL на выходе)"
+
             trades_path, runs_path = self._backtest_paths()
             period = orb_backtest.save_result(
                 b, res, source="quik_chart", trades_path=trades_path, runs_path=runs_path,
@@ -579,6 +592,7 @@ class App(tk.Tk):
                 f"Баров: {len(bars)} ({bars[0].dt:%Y-%m-%d %H:%M} → {bars[-1].dt:%Y-%m-%d %H:%M})",
                 f"Стоимость пункта: {rpp:.2f} ₽ · ГО: {go:.0f} ₽ (текущие значения из QUIK, не исторические)",
                 f"Сделок: {res.summary['trades']}",
+                label_line,
             ] + orb_journal.summary_lines(res.summary) + orb_journal.period_lines(res.summary, period) + [
                 "", f"Сделки прогона: {trades_path}", f"История прогонов: {runs_path}"]
             self.q.put(("backtest_quik_done", {"ok": True, "lines": lines}))
