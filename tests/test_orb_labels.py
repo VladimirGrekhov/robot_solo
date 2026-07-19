@@ -130,5 +130,6 @@ def test_color_probe():
     assert n == len(orb_robot.COLOR_PROBE)
     assert len(qp.requests) == n
     texts = [r["data"].split("|")[4] for r in qp.requests]
-    assert any(t.startswith("yellow") for t in texts)
-    assert any(t.startswith("green") for t in texts)
+    assert any("yellow" in t for t in texts)
+    assert any("green" in t for t in texts)
+    assert texts[0].startswith("#1 ")                    # строки пронумерованы
