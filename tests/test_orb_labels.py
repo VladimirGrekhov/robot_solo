@@ -74,21 +74,27 @@ def test_raw_addlabel2_text():
     qp = RawQuik()
     n, err, diag = orb_robot.add_trade_labels(qp, "si15m", TRADES)
     assert err is None
-    assert n == 6                          # 3 метки на сделку (вход, стоп, выход)
+    assert n == 10                         # 5 меток на сделку (вход, стоп, выход, RH, RL)
     assert qp.cleared == 1
-    assert len(qp.requests) == 6
+    assert len(qp.requests) == 10
     assert all(r["cmd"] == "addLabel2" for r in qp.requests)
     fields = [r["data"].split("|") for r in qp.requests]
     assert all(f[0] == "si15m" for f in fields)          # тег — первое поле
     texts = [f[4] for f in fields]                       # text — пятое поле
-    assert "BUY" in texts and "SELL" in texts and "+600" in texts and "-400" in texts
+    # суффикс входа: направление + время + ширина + номер бара
+    assert any(t.startswith("BUY 11:15 600п b") for t in texts)
+    assert any(t.startswith("SELL 11:15 600п b") for t in texts)
+    assert "+600" in texts and "-400" in texts           # PnL на выходе
     assert any(t.startswith("SL ") for t in texts)       # метка стоп-лосса
+    assert texts.count("---- RH") == 2 and texts.count("---- RL") == 2   # границы диапазона
     # вход-лонг зелёный (r,g,b на позициях 8,9,10)
     buy = fields[0]
     assert (buy[8], buy[9], buy[10]) == ("0", "200", "0")
     # стоп-лосс лонга — жёлтый, в пунктах от входа до стопа (80000-79500=500)
     sl = fields[1]
     assert sl[4] == "SL 500" and (sl[8], sl[9], sl[10]) == ("255", "255", "0")
+    # философия в подсказке (hint — восьмое поле)
+    assert "пробой" in fields[0][7] and "диапазон" in fields[0][7].lower()
     assert "способ=addLabel2" in diag
 
 
@@ -97,9 +103,9 @@ def test_flat_signature_fallback_images():
     qp = FlatQuik()
     n, err, diag = orb_robot.add_trade_labels(qp, "si15m", TRADES)
     assert err is None
-    assert n == 6
+    assert n == 10
     assert qp.cleared == 1
-    assert len(qp.labels) == 6
+    assert len(qp.labels) == 10
     assert qp.labels[0][3] == "si15m"      # chart_tag подставлен правильно
     assert qp.labels[0][5].endswith(".bmp")   # картинка-маркер подставлена в path
     assert "способ=картинки" in diag
@@ -110,7 +116,7 @@ def test_dict_signature():
     qp = DictQuik()
     n, err, diag = orb_robot.add_trade_labels(qp, "si15m", TRADES)
     assert err is None
-    assert n == 6
+    assert n == 10
     assert all("TEXT" in p and "YVALUE" in p for p in qp.labels)
 
 

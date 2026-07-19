@@ -578,9 +578,9 @@ class App(tk.Tk):
                 label_line = f"Метки на графике: не поставлены ({lbl_err})"
             else:
                 log.info("Бэктест (QUIK): меток на графике: %d. [%s]", n_lbl, lbl_diag)
-                label_line = (f"Метки на графике: {n_lbl} — цветной текст: "
-                              "BUY (зелёный) / SELL (красный) на входе, SL (жёлтый) — пунктов от "
-                              "входа до стопа, PnL на выходе (зелёный плюс / красный минус)")
+                label_line = (f"Метки на графике: {n_lbl} — вход BUY/SELL с философией "
+                              "(время, ширина диапазона, № бара; полностью — в подсказке), "
+                              "SL (жёлтый) в пунктах, RH/RL (серые) — границы диапазона, PnL на выходе")
 
             trades_path, runs_path = self._backtest_paths()
             period = orb_backtest.save_result(

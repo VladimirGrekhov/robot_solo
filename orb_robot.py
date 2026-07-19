@@ -236,7 +236,7 @@ def _make_bmp(path, rgb: tuple, size: int = 9) -> None:
 def _ensure_label_icons():
     """Создаёт (если нет) цветные картинки-маркеры и возвращает {имя: абс.путь}."""
     colors = {"buy": (0, 200, 0), "sell": (210, 0, 0), "stop": (255, 255, 0),
-              "win": (0, 110, 220), "loss": (230, 140, 0)}
+              "range": (150, 150, 150), "win": (0, 110, 220), "loss": (230, 140, 0)}
     d = HERE / "label_icons"
     try:
         d.mkdir(exist_ok=True)
@@ -312,19 +312,41 @@ def _add_one_label(add, tag, dt, price, align, image, params):
 
 def _trade_marks(tr):
     """Три метки на сделку: вход (BUY зелёный / SELL красный), стоп-лосс (SL оранжевый,
-    на цене стопа) и выход (PnL, зелёный/красный). Возвращает список
-    (dt, price, text, rgb, align, icon_key). Стоп у лонга снизу, у шорта сверху."""
+    на цене стопа), границы диапазона (RH/RL, серые) и выход (PnL, зелёный/красный).
+    В тексте входа — «философия»: время, ширина диапазона и номер бара после 11:00;
+    полная фраза-обоснование в подсказке (hint). Возвращает список
+    (dt, price, text, rgb, align, icon_key, hint)."""
     long = tr.dir == "long"
     win = tr.pnl_rub > 0
+    width = tr.range_width_pt
+    risk = abs(tr.entry - tr.stop)
+    # границы диапазона 10:00–11:00: стоп на противоположной границе, ширина известна
+    if long:
+        rl, rh = tr.stop, tr.stop + width
+    else:
+        rh, rl = tr.stop, tr.stop - width
+    t_in, t_out = tr.datetime_in, tr.datetime_out
+    mins = (t_in.hour - orb_strategy.ENTRY_START.hour) * 60 + \
+           (t_in.minute - orb_strategy.ENTRY_START.minute)
+    bar_no = max(1, mins // 15)                 # какой M15-бар после 11:00 дал пробой
+    side = "BUY" if long else "SELL"
+    border = "верхней" if long else "нижней"
+    entry_txt = f"{side} {t_in:%H:%M} {width:.0f}п b{bar_no}"
+    phil = (f"{'Лонг' if long else 'Шорт'}: пробой {border} границы диапазона 10:00-11:00. "
+            f"Ширина {width:.0f}п. Вход {t_in:%H:%M} ({bar_no}-й бар после 11:00). Риск {risk:.0f}п.")
     return [
-        (tr.datetime_in, tr.entry, "BUY" if long else "SELL",
-         (0, 200, 0) if long else (210, 0, 0), "BOTTOM" if long else "TOP",
-         "buy" if long else "sell"),
-        (tr.datetime_in, tr.stop, f"SL {abs(tr.entry - tr.stop):.0f}",
-         (255, 255, 0), "BOTTOM" if long else "TOP", "stop"),
-        (tr.datetime_out, tr.exit, f"{tr.pnl_rub:+.0f}",
-         (0, 200, 0) if win else (210, 0, 0), "TOP",
-         "win" if win else "loss"),
+        (t_in, tr.entry, entry_txt, (0, 200, 0) if long else (210, 0, 0),
+         "BOTTOM" if long else "TOP", "buy" if long else "sell", phil),
+        (t_in, tr.stop, f"SL {risk:.0f}", (255, 255, 0),
+         "BOTTOM" if long else "TOP", "stop",
+         f"Стоп на противоположной границе диапазона, {risk:.0f}п от входа"),
+        (t_out, tr.exit, f"{tr.pnl_rub:+.0f}", (0, 200, 0) if win else (210, 0, 0),
+         "TOP", "win" if win else "loss",
+         f"Выход {t_out:%H:%M} ({tr.exit_reason}). PnL {tr.pnl_rub:+.0f} руб"),
+        (t_in, rh, "---- RH", (150, 150, 150), "RIGHT", "range",
+         f"Верхняя граница диапазона 10:00-11:00: {rh:.0f}"),
+        (t_in, rl, "---- RL", (150, 150, 150), "RIGHT", "range",
+         f"Нижняя граница диапазона 10:00-11:00: {rl:.0f}"),
     ]
 
 
@@ -366,10 +388,9 @@ def add_trade_labels(qp, tag: str, trades: list) -> tuple:
     if callable(pr):                                # --- текст через addLabel2 (основной путь) ---
         n, first_id = 0, "?"
         for tr in trades:
-            for dt, price, text, rgb, align, _icon in _trade_marks(tr):
+            for dt, price, text, rgb, align, _icon, hint in _trade_marks(tr):
                 try:
-                    r = _add_label2(qp, tag, price, dt, text, rgb, align,
-                                    hint=f"{dt:%Y-%m-%d %H:%M} {text}")
+                    r = _add_label2(qp, tag, price, dt, text, rgb, align, hint=hint)
                     if first_id == "?":
                         lid = r.get("data") if isinstance(r, dict) and "data" in r else r
                         first_id = f"{lid!r} ({type(lid).__name__})"
@@ -394,7 +415,7 @@ def add_trade_labels(qp, tag: str, trades: list) -> tuple:
     first_id = "?"
     setp_err = None
     for tr in trades:
-        for dt, price, text, rgb, align, icon in _trade_marks(tr):
+        for dt, price, text, rgb, align, icon, _hint in _trade_marks(tr):
             image = icons.get(icon, "")
             params = _label_dict(dt, price, text, rgb, align, image)
             try:
