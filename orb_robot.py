@@ -250,6 +250,28 @@ def _ensure_label_icons():
         return None
 
 
+def _ascii_safe(s: str) -> str:
+    """cp1251-безопасный текст: QUIK кодирует команду в cp1251, символы вне неё
+    (▲▼ • и пр.) ломают addLabel2. Непереводимое заменяем на '?'. Пайп — разделитель."""
+    return s.encode("cp1251", "replace").decode("cp1251").replace("|", "/")
+
+
+def _add_label2(qp, tag, y_value, dt: datetime, text: str, rgb: tuple, align: str,
+                hint: str = "", font_h: int = 12):
+    """Метка с ТЕКСТОМ и цветом через сырую команду addLabel2 (qp.process_request).
+    Так текст рисуется на версиях QuikPy, где у add_label нет поля TEXT (порядок полей
+    и подход — как в chart.py робота pattern: tag|y|date|time|text|img|align|hint|r|g|b|
+    transp|trans_bg|font|font_h)."""
+    dn, tn = dt.strftime("%Y%m%d"), dt.strftime("%H%M%S")
+    r, g, b = rgb
+    data = "|".join([
+        tag, f"{y_value:.6f}", dn, tn,
+        _ascii_safe(text), "", align, _ascii_safe(hint or text),
+        str(r), str(g), str(b), "0", "1", "Arial", str(font_h),
+    ])
+    return qp.process_request({"data": data, "id": 0, "cmd": "addLabel2", "t": ""})
+
+
 def _label_dict(dt: datetime, price: float, text: str, rgb: tuple, align: str, image: str) -> dict:
     """Полный набор параметров метки (для dict-версии AddLabel других версий QuikPy)."""
     return {
@@ -258,7 +280,7 @@ def _label_dict(dt: datetime, price: float, text: str, rgb: tuple, align: str, i
         "R": rgb[0], "G": rgb[1], "B": rgb[2],
         "TRANSPARENCY": 0, "TRANSPARENT_BACKGROUND": 1,
         "FONT_FACE_NAME": "Arial", "FONT_HEIGHT": "10",
-        "HINT": f"{dt:%Y-%m-%d %H:%M} · {text}",
+        "HINT": f"{dt:%Y-%m-%d %H:%M} {text}",
     }
 
 
@@ -287,14 +309,29 @@ def _add_one_label(add, tag, dt, price, align, image, params):
     return r.get("data") if isinstance(r, dict) and "data" in r else r
 
 
+def _trade_marks(tr):
+    """Две метки на сделку: вход (BUY/SELL, зелёный/красный) и выход (PnL, зелёный/красный).
+    Возвращает список (dt, price, text, rgb, align, icon_key)."""
+    long = tr.dir == "long"
+    win = tr.pnl_rub > 0
+    return [
+        (tr.datetime_in, tr.entry, "BUY" if long else "SELL",
+         (0, 180, 0) if long else (255, 40, 40), "BOTTOM" if long else "TOP",
+         "buy" if long else "sell"),
+        (tr.datetime_out, tr.exit, f"{tr.pnl_rub:+.0f}",
+         (0, 180, 0) if win else (255, 40, 40), "TOP",
+         "win" if win else "loss"),
+    ]
+
+
 def add_trade_labels(qp, tag: str, trades: list) -> tuple:
     """Рисует метки входа/выхода сделок на графике QUIK по тегу (для визуального
     разбора QUIK-бэктеста). Возвращает (число_меток, ошибка|None, диагностика).
-    Best-effort: подстраивается под сигнатуру add_label версии QuikPy, текст/цвет —
-    через set_label_params, если он есть. Диагностика (доступные методы, статус
-    set_label_params) нужна, чтобы подстроиться под конкретную версию."""
-    icons = _ensure_label_icons() or {}          # цветные картинки-маркеры (эта версия QUIK
-    methods = [m for m in dir(qp) if "label" in m.lower()]                     # рисует только их)
+
+    Основной путь — текстовые цветные метки через сырую команду addLabel2
+    (qp.process_request): у add_label этой версии QuikPy нет поля TEXT, а addLabel2 есть.
+    Если process_request недоступен — фолбэк на картинки-маркеры через add_label."""
+    methods = [m for m in dir(qp) if "label" in m.lower()]
     for m in ("del_all_labels", "delete_all_labels", "DelAllLabels"):   # снять старые
         fn = getattr(qp, m, None)
         if fn is not None:
@@ -303,30 +340,42 @@ def add_trade_labels(qp, tag: str, trades: list) -> tuple:
             except Exception:  # noqa: BLE001
                 pass
             break
-    add = getattr(qp, "add_label", None) or getattr(qp, "AddLabel", None)
     diag = f"label-методы: {','.join(methods) or 'нет'}"
+
+    pr = getattr(qp, "process_request", None)
+    if callable(pr):                                # --- текст через addLabel2 (основной путь) ---
+        n, first_id = 0, "?"
+        for tr in trades:
+            for dt, price, text, rgb, align, _icon in _trade_marks(tr):
+                try:
+                    r = _add_label2(qp, tag, price, dt, text, rgb, align,
+                                    hint=f"{dt:%Y-%m-%d %H:%M} {text}")
+                    if first_id == "?":
+                        lid = r.get("data") if isinstance(r, dict) and "data" in r else r
+                        first_id = f"{lid!r} ({type(lid).__name__})"
+                    n += 1
+                except Exception as e:  # noqa: BLE001
+                    return n, repr(e), diag + "; способ=addLabel2"
+        diag += f"; способ=addLabel2(текст+цвет); id1={first_id}"
+        return n, None, diag
+
+    # --- фолбэк: картинки-маркеры через add_label (версии без process_request) ---
+    icons = _ensure_label_icons() or {}
+    add = getattr(qp, "add_label", None) or getattr(qp, "AddLabel", None)
     try:                                            # какие поля принимает add_label этой версии
         sig = ",".join(p for p in inspect.signature(add).parameters if p != "self")
         diag += f"; add_label({sig})"
     except (TypeError, ValueError):
         pass
     if add is None:
-        return 0, "QuikPy не поддерживает add_label — метки недоступны на этой версии", diag
+        return 0, "QuikPy не поддерживает ни process_request, ни add_label — метки недоступны", diag
     setp = getattr(qp, "set_label_params", None) or getattr(qp, "SetLabelParams", None)
     n = 0
     first_id = "?"
     setp_err = None
     for tr in trades:
-        long = tr.dir == "long"
-        win = tr.pnl_rub > 0
-        # вход: зелёный (Buy) / красный (Sell); выход: синий (плюс) / оранжевый (минус)
-        marks = [(tr.datetime_in, tr.entry, "Buy" if long else "Sell",
-                  (0, 160, 0) if long else (200, 0, 0), "BOTTOM" if long else "TOP",
-                  icons.get("buy" if long else "sell", "")),
-                 (tr.datetime_out, tr.exit, f"{tr.pnl_rub:+.0f}",
-                  (0, 110, 220) if win else (230, 140, 0), "TOP",
-                  icons.get("win" if win else "loss", ""))]
-        for dt, price, text, rgb, align, image in marks:
+        for dt, price, text, rgb, align, icon in _trade_marks(tr):
+            image = icons.get(icon, "")
             params = _label_dict(dt, price, text, rgb, align, image)
             try:
                 lid = _add_one_label(add, tag, dt, price, align, image, params)
@@ -340,7 +389,7 @@ def add_trade_labels(qp, tag: str, trades: list) -> tuple:
                         setp_err = repr(e)
             except Exception as e:  # noqa: BLE001
                 return n, repr(e), diag
-    diag += f"; иконки={'есть' if icons else 'НЕТ'}"
+    diag += f"; способ=картинки; иконки={'есть' if icons else 'НЕТ'}"
     diag += f"; set_label_params={'есть' if setp else 'НЕТ'}; id1={first_id}"
     if setp_err:
         diag += f"; set упал: {setp_err}"
