@@ -235,7 +235,7 @@ def _make_bmp(path, rgb: tuple, size: int = 9) -> None:
 
 def _ensure_label_icons():
     """Создаёт (если нет) цветные картинки-маркеры и возвращает {имя: абс.путь}."""
-    colors = {"buy": (0, 200, 0), "sell": (210, 0, 0), "stop": (255, 140, 0),
+    colors = {"buy": (0, 200, 0), "sell": (210, 0, 0), "stop": (255, 255, 0),
               "win": (0, 110, 220), "loss": (230, 140, 0)}
     d = HERE / "label_icons"
     try:
@@ -320,8 +320,8 @@ def _trade_marks(tr):
         (tr.datetime_in, tr.entry, "BUY" if long else "SELL",
          (0, 200, 0) if long else (210, 0, 0), "BOTTOM" if long else "TOP",
          "buy" if long else "sell"),
-        (tr.datetime_in, tr.stop, f"SL {tr.stop:.0f}",
-         (255, 140, 0), "BOTTOM" if long else "TOP", "stop"),
+        (tr.datetime_in, tr.stop, f"SL {abs(tr.entry - tr.stop):.0f}",
+         (255, 255, 0), "BOTTOM" if long else "TOP", "stop"),
         (tr.datetime_out, tr.exit, f"{tr.pnl_rub:+.0f}",
          (0, 200, 0) if win else (210, 0, 0), "TOP",
          "win" if win else "loss"),

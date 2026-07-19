@@ -579,21 +579,8 @@ class App(tk.Tk):
             else:
                 log.info("Бэктест (QUIK): меток на графике: %d. [%s]", n_lbl, lbl_diag)
                 label_line = (f"Метки на графике: {n_lbl} — цветной текст: "
-                              "BUY (зелёный) / SELL (красный) на входе, SL (оранжевый) на цене "
-                              "стопа, PnL на выходе (зелёный плюс / красный минус)")
-
-            # столбик образцов цвета под последними свечами — калибровка палитры
-            try:
-                n_probe, probe_err = R.add_color_probe(qp, tag, bars)
-                if probe_err:
-                    log.warning("Бэктест (QUIK): палитра не поставлена: %s", probe_err)
-                    probe_line = f"Палитра-образцы: не поставлены ({probe_err})"
-                else:
-                    log.info("Бэктест (QUIK): образцов цвета: %d.", n_probe)
-                    probe_line = (f"Палитра-образцы: {n_probe} меток-образцов под последними "
-                                  "свечами (имя цвета + RGB, нарисованы этим цветом) — сверь глазами")
-            except Exception as e:  # noqa: BLE001
-                probe_line = f"Палитра-образцы: ошибка ({e!r})"
+                              "BUY (зелёный) / SELL (красный) на входе, SL (жёлтый) — пунктов от "
+                              "входа до стопа, PnL на выходе (зелёный плюс / красный минус)")
 
             trades_path, runs_path = self._backtest_paths()
             period = orb_backtest.save_result(
@@ -608,7 +595,6 @@ class App(tk.Tk):
                 f"Стоимость пункта: {rpp:.2f} ₽ · ГО: {go:.0f} ₽ (текущие значения из QUIK, не исторические)",
                 f"Сделок: {res.summary['trades']}",
                 label_line,
-                probe_line,
                 f"Метки-диагностика: {lbl_diag}",
             ] + orb_journal.summary_lines(res.summary) + orb_journal.period_lines(res.summary, period) + [
                 "", f"Сделки прогона: {trades_path}", f"История прогонов: {runs_path}"]
