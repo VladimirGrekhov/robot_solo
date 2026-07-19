@@ -11,15 +11,16 @@ import orb_journal
 
 
 class RawQuik:
-    """Версия с process_request — текстовые метки через addLabel2 (путь пользователя)."""
+    """Версия с process_request — текстовые метки через addLabel2, очистка через
+    сырую команду delAllLabels (путь пользователя: обёрточный DelAllLabels не работает)."""
     def __init__(self):
         self.requests = []
         self.cleared = 0
 
-    def del_all_labels(self, chart_tag):
-        self.cleared += 1
-
     def process_request(self, req):
+        if req.get("cmd") == "delAllLabels":         # очистка идёт тем же каналом
+            self.cleared += 1
+            return {"data": "ok"}
         self.requests.append(req)
         return {"data": len(self.requests)}
 

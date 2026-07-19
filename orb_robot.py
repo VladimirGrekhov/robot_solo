@@ -328,6 +328,29 @@ def _trade_marks(tr):
     ]
 
 
+def _clear_labels(qp, tag: str) -> str:
+    """Снимает старые метки с графика. У этой версии QUIK обёрточный DelAllLabels НЕ
+    работает (см. комментарий в chart.py ветки master) — рабочий способ это сырая
+    команда delAllLabels через process_request, парная к addLabel2. Обёрточные методы
+    оставляем как запасной вариант для других сборок QuikPy. Возвращает сработавший способ."""
+    pr = getattr(qp, "process_request", None)
+    if callable(pr):
+        try:
+            pr({"data": tag, "id": 0, "cmd": "delAllLabels", "t": ""})
+            return "delAllLabels"
+        except Exception:  # noqa: BLE001
+            pass
+    for m in ("del_all_labels", "delete_all_labels", "DelAllLabels"):
+        fn = getattr(qp, m, None)
+        if fn is not None:
+            try:
+                fn(tag)
+                return m
+            except Exception:  # noqa: BLE001
+                pass
+    return "нет"
+
+
 def add_trade_labels(qp, tag: str, trades: list) -> tuple:
     """Рисует метки входа/выхода сделок на графике QUIK по тегу (для визуального
     разбора QUIK-бэктеста). Возвращает (число_меток, ошибка|None, диагностика).
@@ -336,15 +359,8 @@ def add_trade_labels(qp, tag: str, trades: list) -> tuple:
     (qp.process_request): у add_label этой версии QuikPy нет поля TEXT, а addLabel2 есть.
     Если process_request недоступен — фолбэк на картинки-маркеры через add_label."""
     methods = [m for m in dir(qp) if "label" in m.lower()]
-    for m in ("del_all_labels", "delete_all_labels", "DelAllLabels"):   # снять старые
-        fn = getattr(qp, m, None)
-        if fn is not None:
-            try:
-                fn(tag)
-            except Exception:  # noqa: BLE001
-                pass
-            break
-    diag = f"label-методы: {','.join(methods) or 'нет'}"
+    cleared = _clear_labels(qp, tag)                                   # снять старые метки
+    diag = f"label-методы: {','.join(methods) or 'нет'}; очистка={cleared}"
 
     pr = getattr(qp, "process_request", None)
     if callable(pr):                                # --- текст через addLabel2 (основной путь) ---
