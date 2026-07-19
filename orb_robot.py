@@ -16,6 +16,7 @@ orb_robot.py — точка входа робота ORB (Opening Range Breakout)
 from __future__ import annotations
 
 import argparse
+import inspect
 import logging
 import shutil
 import sys
@@ -218,8 +219,8 @@ def chart_sec(qp, tag: str) -> str | None:
     return None
 
 
-def _label_params(dt: datetime, price: float, text: str, rgb: tuple, align: str) -> dict:
-    """Параметры метки QUIK AddLabel (цена/дата/время/цвет/выравнивание)."""
+def _label_dict(dt: datetime, price: float, text: str, rgb: tuple, align: str) -> dict:
+    """Полный набор параметров метки (QLUA SetLabelParams / dict-версия AddLabel)."""
     return {
         "TEXT": text, "IMAGE_PATH": "", "ALIGNMENT": align,
         "YVALUE": f"{price:.0f}", "DATE": dt.strftime("%Y%m%d"), "TIME": dt.strftime("%H%M%S"),
@@ -230,12 +231,37 @@ def _label_params(dt: datetime, price: float, text: str, rgb: tuple, align: str)
     }
 
 
+def _add_one_label(add, tag, dt, price, align, params):
+    """Вызывает add_label, подстраиваясь под сигнатуру версии QuikPy: dict-форма
+    add_label(tag, params) или позиционная (price, cur_date, cur_time, qty, path,
+    chart_tag, alignment, background). Возвращает id метки (или None)."""
+    values = {
+        "chart_tag": tag, "tag": tag,
+        "label_params": params, "labelparams": params, "label": params, "params": params,
+        "price": f"{price:.0f}", "y_value": f"{price:.0f}", "yvalue": f"{price:.0f}",
+        "cur_date": dt.strftime("%Y%m%d"), "date": dt.strftime("%Y%m%d"),
+        "cur_time": dt.strftime("%H%M%S"), "time": dt.strftime("%H%M%S"),
+        "qty": 0, "path": "", "image_path": "",
+        "alignment": align, "background": 0, "transparent_background": 1,
+    }
+    try:
+        names = [p for p in inspect.signature(add).parameters if p != "self"]
+        kwargs = {n: values[n] for n in names if n in values}
+        if len(kwargs) >= max(1, len(names) - 1):     # покрыли (почти) все аргументы -> зовём по имени
+            r = add(**kwargs)
+        else:
+            r = add(tag, params)                       # не распознали — пробуем dict-форму
+    except (ValueError, TypeError):
+        r = add(tag, params)
+    return r.get("data") if isinstance(r, dict) and "data" in r else r
+
+
 def add_trade_labels(qp, tag: str, trades: list) -> tuple:
     """Рисует метки входа/выхода сделок на графике QUIK по тегу (для визуального
     разбора QUIK-бэктеста). Возвращает (число_меток, ошибка|None). Best-effort:
-    имена методов QuikPy зависят от версии — если add_label нет, метки не ставятся."""
-    # снять старые метки, чтобы повторный прогон не накапливал
-    for m in ("del_all_labels", "delete_all_labels", "DelAllLabels"):
+    подстраивается под сигнатуру add_label версии QuikPy, текст/цвет — через
+    set_label_params, если он есть."""
+    for m in ("del_all_labels", "delete_all_labels", "DelAllLabels"):   # снять старые
         fn = getattr(qp, m, None)
         if fn is not None:
             try:
@@ -243,26 +269,28 @@ def add_trade_labels(qp, tag: str, trades: list) -> tuple:
             except Exception:  # noqa: BLE001
                 pass
             break
-    add = None
-    for m in ("add_label", "AddLabel"):
-        add = getattr(qp, m, None)
-        if add is not None:
-            break
+    add = getattr(qp, "add_label", None) or getattr(qp, "AddLabel", None)
     if add is None:
         return 0, "QuikPy не поддерживает add_label — метки недоступны на этой версии"
+    setp = getattr(qp, "set_label_params", None) or getattr(qp, "SetLabelParams", None)
     n = 0
     for tr in trades:
         long = tr.dir == "long"
-        entry_p = _label_params(tr.datetime_in, tr.entry, ("Buy" if long else "Sell"),
-                                (0, 160, 0) if long else (200, 0, 0),
-                                "BOTTOM" if long else "TOP")
         win = tr.pnl_rub > 0
-        exit_p = _label_params(tr.datetime_out, tr.exit, f"{tr.pnl_rub:+.0f}",
-                               (0, 130, 0) if win else (190, 0, 0), "TOP")
-        for p in (entry_p, exit_p):
+        marks = [(tr.datetime_in, tr.entry, "Buy" if long else "Sell",
+                  (0, 160, 0) if long else (200, 0, 0), "BOTTOM" if long else "TOP"),
+                 (tr.datetime_out, tr.exit, f"{tr.pnl_rub:+.0f}",
+                  (0, 130, 0) if win else (190, 0, 0), "TOP")]
+        for dt, price, text, rgb, align in marks:
+            params = _label_dict(dt, price, text, rgb, align)
             try:
-                add(tag, p)
+                lid = _add_one_label(add, tag, dt, price, align, params)
                 n += 1
+                if setp is not None and lid is not None:   # текст/цвет отдельным вызовом
+                    try:
+                        setp(tag, lid, params)
+                    except Exception:  # noqa: BLE001
+                        pass
             except Exception as e:  # noqa: BLE001
                 return n, repr(e)
     return n, None

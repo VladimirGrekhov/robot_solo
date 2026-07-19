@@ -1,5 +1,6 @@
 """Тесты меток сделок на графике QUIK (визуальный разбор QUIK-бэктеста).
-QUIK эмулируется — проверяем логику расстановки, не проводной формат AddLabel."""
+Проверяем подстройку под разные сигнатуры add_label (позиционная у пользователя
+и dict-версия) + текст/цвет через set_label_params. Проводной формат не тестируем."""
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -9,21 +10,36 @@ import orb_robot
 import orb_journal
 
 
-class FakeQuik:
+class FlatQuik:
+    """Сигнатура как в версии пользователя: позиционные аргументы, текст — отдельно."""
     def __init__(self):
         self.labels = []
+        self.text_params = []
         self.cleared = 0
 
-    def del_all_labels(self, tag):
+    def del_all_labels(self, chart_tag):
         self.cleared += 1
 
-    def add_label(self, tag, params):
-        self.labels.append(params)
+    def add_label(self, price, cur_date, cur_time, qty, path, chart_tag, alignment, background):
+        self.labels.append((price, cur_date, cur_time, chart_tag, alignment))
         return {"data": len(self.labels)}
 
+    def set_label_params(self, chart_tag, label_id, params):
+        self.text_params.append(params)
 
-class FakeQuikNoLabels:
-    pass                       # нет add_label -> метки недоступны
+
+class DictQuik:
+    """Сигнатура add_label(tag, params) — dict-версия."""
+    def __init__(self):
+        self.labels = []
+
+    def add_label(self, chart_tag, label_params):
+        self.labels.append(label_params)
+        return len(self.labels)
+
+
+class NoLabels:
+    pass
 
 
 def _trade(side, entry, exit_, pnl):
@@ -34,21 +50,30 @@ def _trade(side, entry, exit_, pnl):
         pnl_pt=pnl / 2, pnl_rub=pnl, exit_reason="eod", range_width_pt=600, event_flags="")
 
 
-def test_add_trade_labels():
-    qp = FakeQuik()
-    trades = [_trade("long", 80000, 80300, 600.0), _trade("short", 80000, 79800, -400.0)]
-    n, err = orb_robot.add_trade_labels(qp, "si15m", trades)
+TRADES = [_trade("long", 80000, 80300, 600.0), _trade("short", 80000, 79800, -400.0)]
+
+
+def test_flat_signature_with_text():
+    qp = FlatQuik()
+    n, err = orb_robot.add_trade_labels(qp, "si15m", TRADES)
     assert err is None
-    assert n == 4                          # по 2 метки (вход+выход) на сделку
-    assert qp.cleared == 1                 # старые метки сняты один раз
-    texts = [p["TEXT"] for p in qp.labels]
-    assert "Buy" in texts and "Sell" in texts        # направление входа
-    assert "+600" in texts and "-400" in texts        # PnL на выходе
-    # у метки есть дата/время/цена
-    assert all({"DATE", "TIME", "YVALUE"} <= set(p) for p in qp.labels)
+    assert n == 4                          # 2 метки на сделку
+    assert qp.cleared == 1
+    assert len(qp.labels) == 4
+    assert qp.labels[0][3] == "si15m"      # chart_tag подставлен правильно
+    texts = [p["TEXT"] for p in qp.text_params]
+    assert "Buy" in texts and "Sell" in texts and "+600" in texts and "-400" in texts
 
 
-def test_add_trade_labels_unsupported():
-    n, err = orb_robot.add_trade_labels(FakeQuikNoLabels(), "si15m", [_trade("long", 80000, 80300, 600.0)])
+def test_dict_signature():
+    qp = DictQuik()
+    n, err = orb_robot.add_trade_labels(qp, "si15m", TRADES)
+    assert err is None
+    assert n == 4
+    assert all("TEXT" in p and "YVALUE" in p for p in qp.labels)
+
+
+def test_unsupported():
+    n, err = orb_robot.add_trade_labels(NoLabels(), "si15m", TRADES)
     assert n == 0
     assert err is not None and "add_label" in err
