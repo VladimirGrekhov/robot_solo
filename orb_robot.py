@@ -329,6 +329,11 @@ def _trade_marks(tr):
     mins = (t_in.hour - orb_strategy.ENTRY_START.hour) * 60 + \
            (t_in.minute - orb_strategy.ENTRY_START.minute)
     bar_no = max(1, mins // 15)                 # какой M15-бар после 11:00 дал пробой
+    # линия границ диапазона начинается от 10:00 и тянется вправо к входу; длину
+    # чёрточек берём пропорционально числу M15-баров от 10:00 до входа
+    range_dt = datetime.combine(t_in.date(), orb_strategy.RANGE_START)
+    span_bars = max(4, int((t_in - range_dt).total_seconds() // 900))   # 900с = 15 мин
+    dash = "-" * (span_bars * 3)
     side = "BUY" if long else "SELL"
     border = "верхней" if long else "нижней"
     entry_txt = f"{side} {t_in:%H:%M} {width:.0f}п b{bar_no}"
@@ -343,9 +348,9 @@ def _trade_marks(tr):
         (t_out, tr.exit, f"{tr.pnl_rub:+.0f}", (0, 200, 0) if win else (210, 0, 0),
          "TOP", "win" if win else "loss",
          f"Выход {t_out:%H:%M} ({tr.exit_reason}). PnL {tr.pnl_rub:+.0f} руб"),
-        (t_in, rh, "---- RH", (150, 150, 150), "RIGHT", "range",
+        (range_dt, rh, f"RH {dash}", (150, 150, 150), "RIGHT", "range",
          f"Верхняя граница диапазона 10:00-11:00: {rh:.0f}"),
-        (t_in, rl, "---- RL", (150, 150, 150), "RIGHT", "range",
+        (range_dt, rl, f"RL {dash}", (150, 150, 150), "RIGHT", "range",
          f"Нижняя граница диапазона 10:00-11:00: {rl:.0f}"),
     ]
 

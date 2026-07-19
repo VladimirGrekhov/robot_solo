@@ -86,7 +86,11 @@ def test_raw_addlabel2_text():
     assert any(t.startswith("SELL 11:15 600п b") for t in texts)
     assert "+600" in texts and "-400" in texts           # PnL на выходе
     assert any(t.startswith("SL ") for t in texts)       # метка стоп-лосса
-    assert texts.count("---- RH") == 2 and texts.count("---- RL") == 2   # границы диапазона
+    assert sum(t.startswith("RH -") for t in texts) == 2      # границы диапазона (линии)
+    assert sum(t.startswith("RL -") for t in texts) == 2
+    # линия границы начинается от 10:00 (третье-четвёртое поля = дата|время)
+    rh = next(f for f in fields if f[4].startswith("RH -"))
+    assert rh[3] == "100000"                                   # время 10:00:00
     # вход-лонг зелёный (r,g,b на позициях 8,9,10)
     buy = fields[0]
     assert (buy[8], buy[9], buy[10]) == ("0", "200", "0")
