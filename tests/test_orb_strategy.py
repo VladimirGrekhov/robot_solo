@@ -191,3 +191,37 @@ def test_range_too_wide_skips_signals():
     r = s.process_bar(st, bar(11, 0, 810, 820, 805, 815), False, False, 600)
     assert r.entry is None
     assert r.skip == s.SkipInfo("long", "range_too_wide")
+
+
+def test_breakeven_arms_and_exits_at_entry():
+    """breakeven_r=1.0: после +1R стоп переносится в вход, откат к входу = безубыток."""
+    st = build_range(rh=105.0, rl=99.0)
+    r = s.process_bar(st, bar(11, 0, 106, 108, 105, 107), False, False, 600)
+    st = s.open_position(r.state, r.entry, entry_price=106.0, breakeven_r=1.0)
+    assert st.position.be_level == 113.0            # 106 + (106-99)*1.0
+    assert st.position.stop_price == 99.0 and st.position.be_armed is False
+
+    # бар достаёт +1R (high>=113) — безубыток взводится, стоп -> цена входа
+    r2 = s.process_bar(st, bar(11, 15, 107, 113, 107, 112), False, False, 600)
+    assert r2.exit is None
+    assert r2.state.position.be_armed is True
+    assert r2.state.position.stop_price == 106.0
+
+    # откат к входу: выход по стопу в безубытке (106), а не по исходному стопу (99)
+    r3 = s.process_bar(r2.state, bar(11, 30, 110, 111, 105, 106), False, False, 600)
+    assert r3.exit is not None and r3.exit.reason == "stop"
+    assert r3.exit.price == 106.0
+
+
+def test_breakeven_off_by_default():
+    """Без breakeven_r (по умолчанию 0) стоп остаётся на границе диапазона."""
+    st = build_range(rh=105.0, rl=99.0)
+    r = s.process_bar(st, bar(11, 0, 106, 108, 105, 107), False, False, 600)
+    st = s.open_position(r.state, r.entry, entry_price=106.0)   # breakeven_r=0
+    assert st.position.be_level is None
+
+    # ушли высоко и откатились к 105 — стоп 99 не задет, позиция жива
+    r2 = s.process_bar(st, bar(11, 15, 107, 120, 107, 118), False, False, 600)
+    assert r2.state.position.be_armed is False and r2.state.position.stop_price == 99.0
+    r3 = s.process_bar(r2.state, bar(11, 30, 110, 111, 105, 106), False, False, 600)
+    assert r3.exit is None

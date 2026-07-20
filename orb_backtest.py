@@ -42,6 +42,7 @@ class BacktestConfig:
     risk: orb_risk.RiskConfig = orb_risk.RiskConfig()
     allow_position_flip: bool = False    # True — как в эталонном Pine (разворот вместо игнора)
     expiration_zone_mode: str = "trading_days"  # "trading_days" | "calendar_days" (как в Pine)
+    breakeven_r: float = 0.0             # >0 — перенос стопа в безубыток после +k*R (0 — выкл.)
 
 
 @dataclass(frozen=True)
@@ -145,7 +146,7 @@ def run(cfg: BacktestConfig, bars: list[orb_strategy.Bar] | None = None) -> Back
             qty = orb_risk.position_size(cfg.deposit_rub, stop_points, cfg.rub_per_point,
                                           cfg.go_per_contract_assumed, cfg.risk)
             if qty > 0:
-                state = orb_strategy.open_position(state, entry, fill_price)
+                state = orb_strategy.open_position(state, entry, fill_price, cfg.breakeven_r)
                 open_meta = {
                     "side": entry.side, "entry_time": bar.dt, "entry_price": fill_price,
                     "stop_price": entry.stop_price, "qty": qty,

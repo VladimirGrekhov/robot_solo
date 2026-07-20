@@ -245,6 +245,7 @@ class App(tk.Tk):
     STRATEGY_FIELDS = [
         ("allow_position_flip", "Разрешить разворот позиции (как в эталонном Pine)", bool),
         ("expiration_zone_mode", "Зона экспирации", ["trading_days", "calendar_days"]),
+        ("breakeven_r", "Безубыток после +N×R (0 — выкл.; live не двигает стоп)", float),
     ]
     SIZING_FIELDS = [
         ("from_live_equity", "Размер от живого equity из QUIK (иначе от депозита)", bool),
@@ -456,6 +457,7 @@ class App(tk.Tk):
                 risk=risk_cfg,
                 allow_position_flip=bool(strat_cfg.get("allow_position_flip", False)),
                 expiration_zone_mode=strat_cfg.get("expiration_zone_mode", "trading_days"),
+                breakeven_r=float(strat_cfg.get("breakeven_r", 0.0)),
             )
             bars = orb_backtest.load_bars(b)
             res = orb_backtest.run(b, bars=bars)
@@ -564,6 +566,7 @@ class App(tk.Tk):
                 risk=risk_cfg,
                 allow_position_flip=bool(strat_cfg.get("allow_position_flip", False)),
                 expiration_zone_mode=strat_cfg.get("expiration_zone_mode", "trading_days"),
+                breakeven_r=float(strat_cfg.get("breakeven_r", 0.0)),
             )
             res = orb_backtest.run(b, bars=bars)
             log.info("Бэктест (QUIK): готово, сделок=%d.", res.summary["trades"])

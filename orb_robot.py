@@ -500,7 +500,7 @@ class OrbOrchestrator:
     """
 
     def __init__(self, cfg: dict, qp, live: bool, on_event=None, name: str = "",
-                 entry_filter=None, paths: dict | None = None):
+                 entry_filter=None, paths: dict | None = None, breakeven_r: float | None = None):
         self.cfg = cfg
         self.qp = qp
         self.live = live
@@ -513,6 +513,15 @@ class OrbOrchestrator:
         strat_cfg = cfg.get("strategy", {})
         self.allow_position_flip = bool(strat_cfg.get("allow_position_flip", False))
         self.expiration_zone_mode = strat_cfg.get("expiration_zone_mode", "trading_days")
+        # безубыток после +k*R: у теневого варианта берётся из его спецификации,
+        # у чемпиона — из strategy.breakeven_r (0 — выключено; в live стоп не двигается,
+        # только paper/backtest, пока не подтверждён форвардом)
+        self.breakeven_r = float(strat_cfg.get("breakeven_r", 0.0)) if breakeven_r is None \
+            else float(breakeven_r)
+        if self.live and self.breakeven_r > 0:     # в live стоп у брокера не двигаем — не рассинхронизируем
+            log.warning("breakeven_r=%.2f игнорируется в live (перенос стопа в QUIK не реализован; "
+                        "работает только в paper/backtest/shadow)", self.breakeven_r)
+            self.breakeven_r = 0.0
         p = paths or cfg["paths"]              # теневой вариант пишет в свои файлы
         self.risk_path = HERE / p["risk_state_json"]
         self.risk_state = orb_risk.load_risk_state(self.risk_path)
@@ -811,7 +820,8 @@ class OrbOrchestrator:
                 stop_points = abs(bar.open - entry.stop_price)
                 qty = orb_risk.position_size(basis, stop_points, rpp, go, self.risk_cfg)
                 if qty > 0:
-                    self.state = orb_strategy.open_position(self.state, entry, bar.open)
+                    self.state = orb_strategy.open_position(self.state, entry, bar.open,
+                                                            self.breakeven_r)
                     self.open_meta = {"side": entry.side, "entry_time": bar.dt, "entry_price": bar.open,
                                        "stop_price": entry.stop_price, "qty": qty, "rub_per_point": rpp,
                                        "range_width": entry.range_high - entry.range_low}
@@ -1080,7 +1090,8 @@ def build_shadows(cfg: dict, qp) -> list:
                  "trades_csv": f"logs/shadow_{name}_trades.csv",
                  "skips_csv": f"logs/shadow_{name}_skips.csv"}
         shadows.append(OrbOrchestrator(scfg, qp, live=False, on_event=None, name=name,
-                                       entry_filter=make_entry_filter(v.get("filter", {})), paths=paths))
+                                       entry_filter=make_entry_filter(v.get("filter", {})), paths=paths,
+                                       breakeven_r=v.get("breakeven_r")))
     return shadows
 
 

@@ -46,6 +46,8 @@ class Position:
     stop_price: float
     range_high: float
     range_low: float
+    be_level: float | None = None   # цена-триггер безубытка (+kR); None — BE выключен
+    be_armed: bool = False          # безубыток уже взведён (стоп перенесён в вход)
 
 
 @dataclass(frozen=True)
@@ -169,7 +171,15 @@ def process_bar(state: OrbState, bar: Bar, blocked_entry: bool, force_flat: bool
                     state = replace(state, short_used=True)
         if exit_sig is not None:
             state = replace(state, position=None)
-        return BarResult(state, entry=flip_entry, exit=exit_sig)
+            return BarResult(state, entry=flip_entry, exit=exit_sig)
+        # позиция остаётся открытой — взводим безубыток, если этот бар достал +kR
+        # (перенос стопа действует со СЛЕДУЮЩЕГО бара: стоп проверен выше по старой цене)
+        if pos.be_level is not None and not pos.be_armed:
+            reached = (bar.high >= pos.be_level) if pos.side == "long" else (bar.low <= pos.be_level)
+            if reached:
+                state = replace(state, position=replace(
+                    pos, stop_price=pos.entry_price, be_armed=True))
+        return BarResult(state)
 
     # 4. входы — только по свежему пробою (edge-triggered), позиции нет
     entry_sig = None
@@ -194,9 +204,19 @@ def process_bar(state: OrbState, bar: Bar, blocked_entry: bool, force_flat: bool
     return BarResult(state, entry=entry_sig, skip=skip_info)
 
 
-def open_position(state: OrbState, entry: EntrySignal, entry_price: float) -> OrbState:
+def open_position(state: OrbState, entry: EntrySignal, entry_price: float,
+                  breakeven_r: float = 0.0) -> OrbState:
     """Фиксирует в состоянии открытую позицию после того, как вызывающий код
-    (риск-модуль/брокер) подтвердил размер и фактически выставил вход."""
+    (риск-модуль/брокер) подтвердил размер и фактически выставил вход.
+
+    breakeven_r > 0 включает безубыток: при движении на +breakeven_r*R в плюс
+    (R = |вход-стоп|) стоп переносится в цену входа."""
+    be_level = None
+    if breakeven_r and breakeven_r > 0:
+        r = abs(entry_price - entry.stop_price)
+        be_level = (entry_price + r * breakeven_r) if entry.side == "long" \
+            else (entry_price - r * breakeven_r)
     pos = Position(side=entry.side, entry_time=entry.signal_bar_dt, entry_price=entry_price,
-                   stop_price=entry.stop_price, range_high=entry.range_high, range_low=entry.range_low)
+                   stop_price=entry.stop_price, range_high=entry.range_high, range_low=entry.range_low,
+                   be_level=be_level)
     return replace(state, position=pos)
