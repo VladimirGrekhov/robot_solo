@@ -522,6 +522,11 @@ class OrbOrchestrator:
             log.warning("breakeven_r=%.2f игнорируется в live (перенос стопа в QUIK не реализован; "
                         "работает только в paper/backtest/shadow)", self.breakeven_r)
             self.breakeven_r = 0.0
+        # временной EOD-страховщик: если позиция ещё открыта в это время (по часам,
+        # не по бару) — закрыть рынком, чтобы не унести позицию через ночь при обрыве
+        # данных. По умолчанию 18:44 (основная сессия, до вечернего клиринга).
+        self.eod_flat_time = self._parse_hhmm(strat_cfg.get("eod_flat_time", "18:44"), _dtime(18, 44))
+        self._last_price: float | None = None      # последняя известная цена (для оценки PnL в журнале)
         p = paths or cfg["paths"]              # теневой вариант пишет в свои файлы
         self.risk_path = HERE / p["risk_state_json"]
         self.risk_state = orb_risk.load_risk_state(self.risk_path)
@@ -758,6 +763,7 @@ class OrbOrchestrator:
 
     def handle_bar(self, bar: orb_strategy.Bar, replay: bool = False) -> None:
         day = bar.dt.date()
+        self._last_price = bar.close      # для оценки PnL в EOD-страховщике по времени
         if self._vol_day != day:          # смена дня: финализируем диапазон прошлого дня
             if self._day_hl is not None:
                 hi, lo, cl = self._day_hl
@@ -911,6 +917,43 @@ class OrbOrchestrator:
             entry=entry_eff, exit=exit_eff, stop=m["stop_price"],
             pnl_pt=pnl_pt, pnl_rub=pnl_rub, exit_reason=exit_sig.reason,
             range_width_pt=m["range_width"], event_flags="")
+
+    @staticmethod
+    def _parse_hhmm(val, default: _dtime) -> _dtime:
+        try:
+            hh, mm = str(val).split(":")
+            return _dtime(int(hh), int(mm))
+        except Exception:  # noqa: BLE001
+            return default
+
+    def eod_time_flat(self, now_dt: datetime, price: float | None = None) -> bool:
+        """Аварийное закрытие по ВРЕМЕНИ (не по бару): если после eod_flat_time позиция
+        ещё открыта — закрыть рынком + снять стоп, даже если бар 18:40/18:45 не пришёл
+        (обрыв данных). Иначе позицию унесёт через ночь на один биржевой стоп с гэп-риском.
+        Возвращает True, если что-то закрыл. price — оценка цены для журнала (не для заявки:
+        закрытие идёт РЫНКОМ)."""
+        if self.state.position is None or self.open_meta is None:
+            return False
+        if now_dt.time() < self.eod_flat_time:
+            return False
+        day = now_dt.date()
+        px = price if price is not None else (self._last_price or self.open_meta["entry_price"])
+        exit_sig = orb_strategy.ExitSignal("eod_time", px)
+        bar = orb_strategy.Bar(now_dt, px, px, px, px, 0.0)   # синтетический бар для _close_trade
+        trade = self._close_trade(bar, exit_sig)
+        orb_journal.append_trade(self.trades_path, trade)
+        self.risk_state = orb_risk.record_trade_pnl(self.risk_state, day, trade.pnl_rub)
+        orb_risk.save_risk_state(self.risk_path, self.risk_state)
+        log.warning("EOD-СТРАХОВЩИК [%s]: позиция %s ещё открыта в %s — закрываю по времени "
+                    "(бар не обработан). PnL~%.2f руб (оценка по цене %.2f)", self.name or "champ",
+                    trade.dir, now_dt.strftime("%H:%M:%S"), trade.pnl_rub, px)
+        if self.live:
+            self._close_position(self._contract(day), trade.dir,
+                                 self.open_meta["qty"] if self.open_meta else 0, reason="eod_time")
+        self._emit("trade", self._trade_payload(trade))
+        self.open_meta = None
+        self.state = _replace(self.state, position=None)
+        return True
 
     @staticmethod
     def _trade_payload(trade: orb_journal.TradeRecord) -> dict:
@@ -1215,6 +1258,11 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
                 if datetime.now() >= next_acct:
                     _emit_account(qp, acct_firm, acct_trdacc, on_event)
                     next_acct = datetime.now() + timedelta(seconds=acct_every)
+                _now = datetime.now()      # EOD-страховщик по часам (не по бару): не унести позицию в ночь
+                if _now.time() >= orch.eod_flat_time:
+                    orch.eod_time_flat(_now)
+                    for s in shadows:
+                        s.eod_time_flat(_now)
                 _time.sleep(min(1.0, (wake - datetime.now()).total_seconds()))
             if _stopped():
                 break

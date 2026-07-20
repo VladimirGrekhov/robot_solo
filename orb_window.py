@@ -246,6 +246,7 @@ class App(tk.Tk):
         ("allow_position_flip", "Разрешить разворот позиции (как в эталонном Pine)", bool),
         ("expiration_zone_mode", "Зона экспирации", ["trading_days", "calendar_days"]),
         ("breakeven_r", "Безубыток после +N×R (0 — выкл.; live не двигает стоп)", float),
+        ("eod_flat_time", "EOD-страховщик: закрыть рынком по времени, ЧЧ:ММ", str),
     ]
     SIZING_FIELDS = [
         ("from_live_equity", "Размер от живого equity из QUIK (иначе от депозита)", bool),
