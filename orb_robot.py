@@ -1217,6 +1217,56 @@ def _emit_account(qp, firm, acc, on_event) -> None:
     on_event("account", _account_payload(snap))
 
 
+def preflight_checks(cfg: dict, qp, expected: str, tag: str, live: bool) -> tuple[list, bool]:
+    """Пре-флайт боевого старта (пункт №4): проверки перед реальной торговлей. Возвращает
+    (список (имя, уровень, детали), ok_торговать). В live любой 'fail' запрещает старт.
+    Уровни: ok | warn | fail."""
+    cls = cfg["class_code"]
+    tick = float(cfg.get("tick_size", 1.0))
+    res: list = []
+
+    def add(name, level, detail):
+        res.append((name, level, detail))
+
+    conn = _probe_connection(qp)                        # связь
+    add("Связь с QUIK", {"ok": "ok", "unknown": "warn", "down": "fail"}[conn],
+        {"ok": "жива", "unknown": "не определить (нет is_connected)", "down": "потеряна"}[conn])
+
+    firm, trdacc = orb_account.find_futures_account(qp)  # счёт
+    add("Фьючерсный счёт", "ok" if (firm and trdacc) else ("fail" if live else "warn"),
+        f"{firm}/{trdacc}" if (firm and trdacc) else "не найден в qp.accounts")
+
+    acc = str(cfg.get("account", "")).strip()           # ACCOUNT для заявок
+    add("ACCOUNT в конфиге", "fail" if (live and not acc) else "ok", acc or "(не задан)")
+
+    add("Активный контракт", "ok" if expected else "fail", expected or "не определён календарём")
+
+    sec = chart_sec(qp, tag)                            # график ↔ контракт
+    if sec is None:
+        add("График↔контракт", "warn", "sec за тегом не отдаётся — сверка по цене/свежести")
+    elif sec == expected:
+        add("График↔контракт", "ok", f"тег '{tag}' = {sec}")
+    else:
+        add("График↔контракт", "fail", f"тег '{tag}' = {sec}, а торгуем {expected}")
+
+    go = _read_go(qp, cls, expected) if expected else None
+    add("ГО контракта", "ok" if go else "warn", f"{go:.0f} ₽" if go else "не прочитано — будет допущение")
+    rpp = _rub_per_point(qp, cls, expected, tick) if expected else None
+    add("Цена пункта (STEPPRICE)", "ok" if rpp else "warn",
+        f"{rpp:.2f} ₽" if rpp else "не прочитана — 1.0 по умолчанию")
+
+    ks = orb_risk.kill_switch_active(HERE / cfg.get("kill_switch_dir", "."))
+    add("Kill-switch", "fail" if ks else "ok", "АКТИВЕН (файл STOP)" if ks else "не активен")
+
+    off = datetime.now().astimezone().utcoffset()       # робот работает по локальному времени = MSK
+    off_h = off.total_seconds() / 3600 if off is not None else None
+    add("Часовой пояс", "ok" if off_h == 3 else "warn",
+        "UTC+3 (MSK)" if off_h == 3 else f"UTC{off_h:+.0f} — робот считает локальное время MSK, проверь часы")
+
+    ok = all(level != "fail" for _, level, _ in res)
+    return res, ok
+
+
 def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, confirmed: bool = False) -> None:
     """stop_event/on_event — для GUI (orb_window.py): остановка из окна и поток событий в интерфейс.
     confirmed=True пропускает интерактивное подтверждение live (его тогда должен показать сам GUI)."""
@@ -1257,6 +1307,27 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
     else:
         log.info("Охрана графика: QuikPy НЕ отдаёт sec за тегом '%s' — сверка по имени недоступна, "
                  "работает сверка по цене/свежести последнего бара.", tag)
+
+    # пункт №4: пре-флайт боевого старта — серия проверок, в live любой fail = отказ торговать
+    checks, preflight_ok = preflight_checks(cfg, qp, expected, tag, live)
+    log.info("Пре-флайт (%s):", "LIVE" if live else "paper")
+    for _name, _level, _detail in checks:
+        _mark = {"ok": "OK", "warn": "!", "fail": "FAIL"}[_level]
+        (log.error if _level == "fail" else log.warning if _level == "warn" else log.info)(
+            "  [%s] %s: %s", _mark, _name, _detail)
+    if on_event:
+        on_event("preflight", {"ok": preflight_ok, "live": live,
+                               "checks": [{"name": n, "level": lv, "detail": d} for n, lv, d in checks]})
+    if live and not preflight_ok:
+        fails = "; ".join(f"{n} ({d})" for n, lv, d in checks if lv == "fail")
+        log.error("ПРЕ-ФЛАЙТ НЕ ПРОЙДЕН — live не запускаю. Провалы: %s", fails)
+        if on_event:
+            on_event("error", {"text": f"пре-флайт не пройден: {fails} — live НЕ запущен"})
+        try:
+            qp.close_connection_and_thread()
+        except Exception:  # noqa: BLE001
+            pass
+        return
 
     orch = OrbOrchestrator(cfg, qp, live, on_event=on_event)
     shadows = build_shadows(cfg, qp)          # теневые варианты (paper, свои журналы, без заявок)
