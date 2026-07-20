@@ -963,6 +963,46 @@ class OrbOrchestrator:
                 "datetime_in": trade.datetime_in.isoformat(sep=" "),
                 "datetime_out": trade.datetime_out.isoformat(sep=" ")}
 
+    def check_stop_alive(self, sec: str) -> None:
+        """Пульс защиты (пункт №2): live-позиция открыта, а активного биржевого стопа НЕТ
+        — переставить стоп и громко предупредить (голую позицию не держим). Безопасно:
+        переставляем ТОЛЬКО когда позиция подтверждена (net != 0) И стопов подтверждённо
+        нет ([]). При нечитаемых данных (None) — только предупреждаем, чтобы не поставить
+        двойной стоп (двойной стоп после срабатывания = голая перевёрнутая позиция)."""
+        if not self.live or self.state.position is None or self.open_meta is None:
+            return
+        net = self._net_position(sec)
+        if net is None:
+            log.warning("пульс стопа: позиция не читается — пропускаю проверку.")
+            return
+        if net == 0:
+            return                              # плоско — займётся штатная сверка выхода
+        stops = orb_broker_quik.active_stop_orders(self.qp, self.cfg["class_code"], sec)
+        if stops is None:
+            log.warning("пульс стопа: активные стопы не прочитать — проверь терминал.")
+            return
+        if stops:
+            return                              # стоп жив — всё в порядке
+        # позиция есть, стопа НЕТ — критично
+        side = self.state.position.side
+        stop_price = self.state.position.stop_price
+        qty = abs(net)
+        closing_side = "short" if side == "long" else "long"
+        log.error("ПУЛЬС СТОПА: позиция %s %d БЕЗ биржевого стопа! Переставляю стоп на %.2f.",
+                  side, qty, stop_price)
+        self._emit("error", {"text": f"стоп пропал у позиции {side} — переставляю на {stop_price:.2f}"})
+        r = orb_broker_quik.send_stop_order(self.qp, self.cfg["account"], self.cfg["class_code"], sec,
+                                            closing_side, qty, stop_price, self.cfg.get("client_code", ""))
+        if getattr(r, "ok", False):
+            self.stop_ref_active = True
+            log.info("пульс стопа: стоп переставлен: %s", r)
+        else:
+            log.error("ПУЛЬС СТОПА: стоп НЕ переставился (%s) — аварийно закрываю позицию.", r)
+            self._emit("error", {"text": "стоп не переставился — аварийно закрываю позицию"})
+            self._close_position(sec, side, qty, reason="no_stop_heartbeat")
+            self.state = _replace(self.state, position=None)
+            self.open_meta = None
+
     def _send_entry_orders(self, sec: str, side: str, qty: int, stop_price: float) -> None:
         """Вход + защитный стоп со сверкой (пункт №1): подтверждаем фил по факту
         позиции, приводим qty к фактическому, гарантируем, что стоп встал (иначе
@@ -1248,6 +1288,8 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
     _emit_account(qp, acct_firm, acct_trdacc, on_event)
     acct_every = float(cfg.get("account_poll_seconds", 10))
     next_acct = datetime.now()
+    stop_every = float(cfg.get("stop_check_seconds", 30))   # пульс живости биржевого стопа
+    next_stop = datetime.now()
 
     try:
         while not _stopped():
@@ -1258,6 +1300,9 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
                 if datetime.now() >= next_acct:
                     _emit_account(qp, acct_firm, acct_trdacc, on_event)
                     next_acct = datetime.now() + timedelta(seconds=acct_every)
+                if live and datetime.now() >= next_stop:   # позиция открыта ⇒ стоп обязан быть
+                    orch.check_stop_alive(orch._contract(datetime.now().date()))
+                    next_stop = datetime.now() + timedelta(seconds=stop_every)
                 _now = datetime.now()      # EOD-страховщик по часам (не по бару): не унести позицию в ночь
                 if _now.time() >= orch.eod_flat_time:
                     orch.eod_time_flat(_now)
