@@ -155,6 +155,23 @@ def _load_recent(qp, tag: str, want: int | None = None) -> list[dict]:
     return candles
 
 
+def _probe_connection(qp) -> str:
+    """Состояние связи с QUIK для watchdog: 'ok' — жива; 'down' — потеряна (сокет мёртв
+    или терминал не подключён к серверу); 'unknown' — метода нет, не определить."""
+    fn = getattr(qp, "is_connected", None) or getattr(qp, "isConnected", None)
+    if fn is None:
+        return "unknown"
+    try:
+        r = fn()
+    except Exception:  # noqa: BLE001
+        return "down"                       # исключение = сокет к QuikPy мёртв
+    val = r.get("data") if isinstance(r, dict) else r
+    try:
+        return "ok" if int(val) == 1 else "down"
+    except (TypeError, ValueError):
+        return "ok" if val else "down"
+
+
 def _rub_per_point(qp, cls: str, sec: str, tick_size: float) -> float | None:
     """Стоимость 1 пункта цены в рублях для 1 контракта (QUIK-параметр STEPPRICE).
     Для Si обычно ровно 1.0 — читаем живьём на случай, если это когда-то изменится."""
@@ -1290,6 +1307,8 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
     next_acct = datetime.now()
     stop_every = float(cfg.get("stop_check_seconds", 30))   # пульс живости биржевого стопа
     next_stop = datetime.now()
+    stale_minutes = float(cfg.get("stale_minutes", 25))     # watchdog застоя данных (завис график/модем)
+    stale = False
 
     try:
         while not _stopped():
@@ -1314,19 +1333,44 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
             if on_event:
                 on_event("wake", {"time": datetime.now().strftime("%H:%M:%S")})
             candles = _load_recent(qp, tag, want=max(80, 5))
-            if len(candles) < 2:            # нет закрытых баров = тег пуст/переименован
+            if len(candles) < 2:            # нет баров: различаем «связь умерла» и «график пропал»
+                conn = _probe_connection(qp)
                 if not no_data:
-                    log.error("НЕТ СВЕЖИХ СВЕЧЕЙ по тегу '%s' — график пропал/переименован. "
-                              "Робот без данных, входы невозможны — проверь график в QUIK.", tag)
-                    if on_event:
-                        on_event("error", {"text": f"нет свечей по тегу '{tag}' — проверь график в QUIK"})
+                    if conn == "down":
+                        log.error("СВЯЗЬ С QUIK ПОТЕРЯНА — проверь модем/интернет/терминал. "
+                                  "Робот слеп; открытую позицию держит биржевой стоп.")
+                        if on_event:
+                            on_event("error", {"text": "связь с QUIK потеряна — проверь модем/терминал "
+                                                       "(позицию держит биржевой стоп)"})
+                    else:
+                        log.error("НЕТ СВЕЖИХ СВЕЧЕЙ по тегу '%s' — график пропал/переименован. "
+                                  "Робот без данных, входы невозможны — проверь график в QUIK.", tag)
+                        if on_event:
+                            on_event("error", {"text": f"нет свечей по тегу '{tag}' — проверь график в QUIK"})
                     no_data = True
                 continue
             if no_data:
-                log.info("Свечи по тегу '%s' снова поступают — данные восстановлены.", tag)
+                log.info("Данные по тегу '%s' снова поступают — восстановлено.", tag)
                 no_data = False
                 if on_event:
-                    on_event("chart_ok", {"text": "данные по графику восстановлены"})
+                    on_event("chart_ok", {"text": "данные восстановлены"})
+            # watchdog застоя (модем/зависший график): свечи есть, но не обновляются
+            newest = _bar_dt(candles[-1]) or _bar_dt(candles[-2])
+            now_t = datetime.now()
+            in_session = _dtime(10, 0) <= now_t.time() <= _dtime(18, 45)
+            age_min = (now_t - newest).total_seconds() / 60 if newest else 1e9
+            if in_session and age_min > stale_minutes:
+                if not stale:
+                    log.error("ДАННЫЕ ЗАСТЫЛИ: последний бар %s (возраст %.0f мин) — график завис / связь "
+                              "нестабильна. Входы на паузе; позицию держит биржевой стоп.", newest, age_min)
+                    if on_event:
+                        on_event("error", {"text": f"данные застыли ({age_min:.0f} мин) — проверь связь/график"})
+                    stale = True
+            elif stale:
+                log.info("Данные снова обновляются (возраст бара %.0f мин).", age_min)
+                stale = False
+                if on_event:
+                    on_event("chart_ok", {"text": "данные снова обновляются"})
             closed = candles[:-1]
             new = [c for c in closed if (_bar_dt(c) or datetime.min) > (last_dt or datetime.min)]
             for c in new:
