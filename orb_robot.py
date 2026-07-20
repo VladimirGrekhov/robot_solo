@@ -943,34 +943,38 @@ class OrbOrchestrator:
         except Exception:  # noqa: BLE001
             return default
 
-    def eod_time_flat(self, now_dt: datetime, price: float | None = None) -> bool:
-        """Аварийное закрытие по ВРЕМЕНИ (не по бару): если после eod_flat_time позиция
-        ещё открыта — закрыть рынком + снять стоп, даже если бар 18:40/18:45 не пришёл
-        (обрыв данных). Иначе позицию унесёт через ночь на один биржевой стоп с гэп-риском.
-        Возвращает True, если что-то закрыл. price — оценка цены для журнала (не для заявки:
-        закрытие идёт РЫНКОМ)."""
+    def flat_now(self, reason: str, price: float, when: datetime) -> bool:
+        """Немедленно закрыть открытую позицию рынком (kill-switch / ручной flat / EOD по
+        времени). Журналит сделку, в live шлёт рыночное закрытие + снимает стоп через
+        _close_position. Возвращает True, если закрывал. price — оценка для журнала (заявка
+        идёт РЫНКОМ)."""
         if self.state.position is None or self.open_meta is None:
             return False
-        if now_dt.time() < self.eod_flat_time:
-            return False
-        day = now_dt.date()
-        px = price if price is not None else (self._last_price or self.open_meta["entry_price"])
-        exit_sig = orb_strategy.ExitSignal("eod_time", px)
-        bar = orb_strategy.Bar(now_dt, px, px, px, px, 0.0)   # синтетический бар для _close_trade
+        day = when.date()
+        exit_sig = orb_strategy.ExitSignal(reason, price)
+        bar = orb_strategy.Bar(when, price, price, price, price, 0.0)   # синтетический бар для _close_trade
         trade = self._close_trade(bar, exit_sig)
         orb_journal.append_trade(self.trades_path, trade)
         self.risk_state = orb_risk.record_trade_pnl(self.risk_state, day, trade.pnl_rub)
         orb_risk.save_risk_state(self.risk_path, self.risk_state)
-        log.warning("EOD-СТРАХОВЩИК [%s]: позиция %s ещё открыта в %s — закрываю по времени "
-                    "(бар не обработан). PnL~%.2f руб (оценка по цене %.2f)", self.name or "champ",
-                    trade.dir, now_dt.strftime("%H:%M:%S"), trade.pnl_rub, px)
+        log.warning("FLAT [%s] (%s): позиция %s закрыта в %s. PnL~%.2f руб (оценка по %.2f)",
+                    self.name or "champ", reason, trade.dir, when.strftime("%H:%M:%S"), trade.pnl_rub, price)
         if self.live:
             self._close_position(self._contract(day), trade.dir,
-                                 self.open_meta["qty"] if self.open_meta else 0, reason="eod_time")
+                                 self.open_meta["qty"] if self.open_meta else 0, reason=reason)
         self._emit("trade", self._trade_payload(trade))
         self.open_meta = None
         self.state = _replace(self.state, position=None)
         return True
+
+    def eod_time_flat(self, now_dt: datetime, price: float | None = None) -> bool:
+        """Аварийное закрытие по ВРЕМЕНИ (не по бару): если после eod_flat_time позиция ещё
+        открыта — закрыть рынком, даже если бар 18:40/18:45 не пришёл (обрыв данных). Иначе
+        позицию унесёт через ночь на один биржевой стоп с гэп-риском."""
+        if self.state.position is None or self.open_meta is None or now_dt.time() < self.eod_flat_time:
+            return False
+        px = price if price is not None else (self._last_price or self.open_meta["entry_price"])
+        return self.flat_now("eod_time", px, now_dt)
 
     @staticmethod
     def _trade_payload(trade: orb_journal.TradeRecord) -> dict:
@@ -1390,6 +1394,14 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
                 if datetime.now() >= next_acct:
                     _emit_account(qp, acct_firm, acct_trdacc, on_event)
                     next_acct = datetime.now() + timedelta(seconds=acct_every)
+                # аварийный flat по kill-switch — сразу (не ждём следующий бар): кнопка «Закрыть всё»
+                if orb_risk.kill_switch_active(orch.kill_dir):
+                    if not orch.halted_by_kill_switch:
+                        log.warning("KILL SWITCH: файл STOP найден — закрываю позицию и останавливаюсь.")
+                        orch.halted_by_kill_switch = True
+                    px = orch._last_price or (orch.open_meta["entry_price"] if orch.open_meta else 0.0)
+                    orch.flat_now("kill", px, datetime.now())
+                    break
                 if live and datetime.now() >= next_stop:   # позиция открыта ⇒ стоп обязан быть
                     orch.check_stop_alive(orch._contract(datetime.now().date()))
                     next_stop = datetime.now() + timedelta(seconds=stop_every)
@@ -1399,7 +1411,7 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
                     for s in shadows:
                         s.eod_time_flat(_now)
                 _time.sleep(min(1.0, (wake - datetime.now()).total_seconds()))
-            if _stopped():
+            if _stopped() or orch.halted_by_kill_switch:
                 break
             if on_event:
                 on_event("wake", {"time": datetime.now().strftime("%H:%M:%S")})

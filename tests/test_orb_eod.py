@@ -69,3 +69,12 @@ def test_closes_after_time(tmp_path):
 def test_no_position_is_noop(tmp_path):
     orch = make(tmp_path)
     assert orch.eod_time_flat(datetime(2026, 7, 16, 18, 45)) is False
+
+
+def test_flat_now_closes_with_reason(tmp_path):
+    """flat_now — общий немедленный выход (kill / ручной flat): закрывает и журналит с причиной."""
+    orch = make(tmp_path)
+    open_pos(orch, side="long", entry=78000.0)
+    assert orch.flat_now("kill", 77900.0, datetime(2026, 7, 16, 15, 0)) is True
+    assert orch.state.position is None and orch.open_meta is None
+    assert "kill" in (tmp_path / "t.csv").read_text(encoding="utf-8")

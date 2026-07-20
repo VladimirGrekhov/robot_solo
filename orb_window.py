@@ -224,8 +224,34 @@ class App(tk.Tk):
     def _build_robot_tab(self, parent):
         card = tk.Frame(parent, bg=BG_PANEL)
         card.pack(fill="x", padx=8, pady=8)
+        # полоса режима: в бою — красная и заметная, в симуляции — приглушённая
+        self.mode_banner = tk.Label(card, text="", bg=BG_PANEL, fg=FG, font=FONT_BOLD, anchor="w")
+        self.mode_banner.pack(fill="x", padx=10, pady=(8, 0))
         self.robot_head = tk.Label(card, text="контракт: …", bg=BG_PANEL, fg=FG_MUTED, font=FONT)
-        self.robot_head.pack(anchor="w", padx=10, pady=8)
+        self.robot_head.pack(anchor="w", padx=10, pady=(2, 8))
+
+        # боевой кокпит: позиция/стоп + связь + аварийное закрытие
+        cockpit = tk.Frame(parent, bg=BG_PANEL)
+        cockpit.pack(fill="x", padx=8, pady=(0, 8))
+        self.pos_lbl = tk.Label(cockpit, text="Позиция: нет", bg=BG_PANEL, fg=FG, font=FONT_BOLD, anchor="w")
+        self.pos_lbl.pack(fill="x", padx=10, pady=(8, 2))
+        self.conn_lbl = tk.Label(cockpit, text="Данные: —", bg=BG_PANEL, fg=FG_MUTED, font=FONT, anchor="w")
+        self.conn_lbl.pack(fill="x", padx=10, pady=(0, 6))
+        self.flat_btn = tk.Button(cockpit, text="⛔ Закрыть всё (аварийно)", command=self._emergency_flat,
+                                  bg="#5a1a1a", fg=FG, activebackground=RED, activeforeground=FG,
+                                  relief="flat", font=FONT, padx=12, pady=4, cursor="hand2")
+        self.flat_btn.pack(anchor="w", padx=10, pady=(0, 8))
+
+        # пре-флайт боевого старта (цветной чек-лист)
+        tk.Label(parent, text="Пре-флайт", bg=BG, fg=FG, font=FONT_BOLD).pack(anchor="w", padx=10, pady=(6, 2))
+        self.preflight_box = tk.Text(parent, bg=BG_PANEL, fg=FG, font=FONT_MONO, relief="flat",
+                                     wrap="word", padx=10, pady=6, height=9)
+        self.preflight_box.pack(fill="x", padx=8, pady=(0, 8))
+        self.preflight_box.tag_config("ok", foreground=GREEN)
+        self.preflight_box.tag_config("warn", foreground=YELLOW)
+        self.preflight_box.tag_config("fail", foreground=RED)
+        self.preflight_box.insert("end", "запусти робота — здесь появится чек-лист боевого старта")
+        self.preflight_box.configure(state="disabled")
 
         tk.Label(parent, text="Лента сигналов/сделок", bg=BG, fg=FG, font=FONT_BOLD).pack(
             anchor="w", padx=10, pady=(6, 2))
@@ -818,22 +844,33 @@ class App(tk.Tk):
             self._set_lamp(GREEN)
             self.status_lbl.config(text="работает")
             self._clear_alert()
+            live = bool(data["live_trading"])
             self.mode_lbl.config(text=f"режим: {data['mode']} · "
-                                      + ("боевой" if data["live_trading"] else "симуляция"))
+                                      + ("боевой" if live else "симуляция"))
+            self._paint_mode(live)                       # LIVE — красный кокпит
             self.robot_head.config(text=f"контракт: {data['contract']} · график '{data['tag']}' · "
                                        f"ТФ {data['tf']} мин")
+            self.pos_lbl.config(text="Позиция: нет", fg=FG)
+        elif kind == "preflight":
+            self._render_preflight(data)
         elif kind == "waiting":
             self.online_lbl.config(text=f"жду следующую свечу до {data['until']}")
+            self.conn_lbl.config(text=f"Данные: идут · жду свечу до {data['until']}", fg=GREEN)
         elif kind == "wake":
             self.online_lbl.config(text=f"проверка в {data['time']}…")
+            self.conn_lbl.config(text=f"Данные: идут · проверка {data['time']}", fg=GREEN)
         elif kind == "entry":
             side = "BUY" if data["side"] == "long" else "SELL"
             self._append(self.feed, f"{data['bar']} · ВХОД {side} · цена~{data['price']:.2f} "
                                     f"стоп {data['stop']:.2f} qty {data['qty']}")
+            self.pos_lbl.config(text=f"Позиция: {side} {data['qty']} @ {data['price']:.2f} · "
+                                     f"стоп {data['stop']:.2f}",
+                                fg=GREEN if data["side"] == "long" else RED)
         elif kind == "trade":
             self._append(self.feed, f"{data['datetime_out']} · ВЫХОД {data['dir'].upper()} · "
                                     f"причина {data['exit_reason']} · pnl {data['pnl_pt']:+.1f} пт / "
                                     f"{data['pnl_rub']:+.0f} ₽")
+            self.pos_lbl.config(text="Позиция: нет", fg=FG)
             self._render_analytics()
         elif kind == "skip":
             self._append(self.feed, f"{data['bar']} · пропуск {data['side']}: {data['reason']}")
@@ -860,18 +897,61 @@ class App(tk.Tk):
             self.status_lbl.config(text="ошибка")
             text = data.get("text", "")
             self.alert_lbl.config(text="⚠ " + text, bg="#5a1a1a")
+            self.conn_lbl.config(text="Данные/связь: проблема — см. алерт", fg=RED)
             self._append(self.logbox, "ОШИБКА: " + text)
         elif kind == "chart_ok":
             self._clear_alert()
             self._set_lamp(GREEN)
             self.status_lbl.config(text="работает")
+            self.conn_lbl.config(text="Данные: восстановлены", fg=GREEN)
         elif kind == "stopped":
             self._set_lamp(GREY)
             self.status_lbl.config(text="остановлен")
             self.online_lbl.config(text="")
+            self.conn_lbl.config(text="Данные: —", fg=FG_MUTED)
+            self.pos_lbl.config(text="Позиция: нет", fg=FG)
             self._clear_alert()
             self.start_btn.config(state="normal")
             self.stop_btn.config(state="disabled")
+
+    # --- боевой кокпит --------------------------------------------------------------
+    def _paint_mode(self, live: bool):
+        """LIVE — красная заметная полоса; симуляция — приглушённая зелёная."""
+        if live:
+            self.mode_banner.config(text="🔴 БОЙ · LIVE — реальные заявки", bg="#5a1a1a", fg="#ffd0d0")
+            self.mode_lbl.config(fg="#ffb0b0")
+        else:
+            self.mode_banner.config(text="⚪ Симуляция (paper) — заявки не шлются", bg=BG_PANEL, fg=GREEN)
+            self.mode_lbl.config(fg=FG_MUTED)
+
+    def _render_preflight(self, data: dict):
+        marks = {"ok": "OK  ", "warn": "!   ", "fail": "FAIL"}
+        self.preflight_box.configure(state="normal")
+        self.preflight_box.delete("1.0", "end")
+        head = "ПРЕ-ФЛАЙТ ПРОЙДЕН" if data.get("ok") else "ПРЕ-ФЛАЙТ НЕ ПРОЙДЕН — live не запустится"
+        self.preflight_box.insert("end", head + "\n", "ok" if data.get("ok") else "fail")
+        for c in data.get("checks", []):
+            lvl = c["level"]
+            self.preflight_box.insert("end", f"  [{marks.get(lvl, '?')}] {c['name']}: {c['detail']}\n", lvl)
+        self.preflight_box.configure(state="disabled")
+
+    def _emergency_flat(self):
+        if not messagebox.askyesno(
+                "Аварийное закрытие",
+                "Закрыть ВСЕ позиции рынком и остановить робота?\n\n"
+                "Создаётся файл STOP (kill-switch). Чтобы снова запустить робота, "
+                "удали файл STOP (иначе пре-флайт не пустит)."):
+            return
+        ks_dir = Path(__file__).resolve().parent / self.cfg.get("kill_switch_dir", ".")
+        try:
+            ks_dir.mkdir(parents=True, exist_ok=True)
+            (ks_dir / "STOP").write_text("emergency flat from GUI\n", encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("Ошибка", f"Не удалось создать файл STOP: {e}")
+            return
+        self.alert_lbl.config(text="⛔ Kill-switch активирован — робот закрывает позицию и останавливается",
+                              bg="#5a1a1a")
+        self._append(self.logbox, "KILL-SWITCH (кнопка): создан файл STOP — робот закроет позицию и остановится.")
 
     # --- мелочи ---------------------------------------------------------------------
     def _set_lamp(self, color):
