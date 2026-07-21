@@ -85,7 +85,16 @@ def test_go_unreadable_is_warn_not_fail(tmp_path):
     assert levels(checks)["ГО контракта"] == "warn"
 
 
-def test_empty_account_fails_live(tmp_path):
+def test_empty_account_autofilled_from_quik(tmp_path):
+    # account в конфиге пуст, но фьючерсный счёт найден в QUIK -> авто-подстановка, ok
     checks, ok = orb_robot.preflight_checks(cfg_for(tmp_path, account=""), FakeQuik(), EXPECTED, TAG, live=True)
+    assert ok is True
+    assert levels(checks)["Счёт для заявок"] == "ok"
+
+
+def test_no_account_anywhere_fails_live(tmp_path):
+    # ни в конфиге, ни в QUIK -> заявки слать некуда -> fail в live
+    checks, ok = orb_robot.preflight_checks(cfg_for(tmp_path, account=""),
+                                            FakeQuik(has_account=False), EXPECTED, TAG, live=True)
     assert ok is False
-    assert levels(checks)["ACCOUNT в конфиге"] == "fail"
+    assert levels(checks)["Счёт для заявок"] == "fail"

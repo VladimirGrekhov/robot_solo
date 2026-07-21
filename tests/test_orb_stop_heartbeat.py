@@ -59,6 +59,17 @@ def make(tmp_path, qp):
     return orch
 
 
+def test_order_account_prefers_config(tmp_path):
+    orch = make(tmp_path, FakeQuik())                    # cfg account="TEST"
+    assert orch._order_account() == "TEST"
+
+
+def test_order_account_autofills_from_quik(tmp_path):
+    orch = make(tmp_path, FakeQuik())
+    orch.cfg["account"] = ""                              # пусто в конфиге -> берём торговый счёт QUIK
+    assert orch._order_account() == "ACC"                 # trade_account_id из FakeQuik.accounts
+
+
 def test_stop_present_no_action(tmp_path):
     qp = FakeQuik(net=2, stops="present")
     orch = make(tmp_path, qp)

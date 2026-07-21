@@ -635,6 +635,15 @@ class OrbOrchestrator:
             self._acct = orb_account.find_futures_account(self.qp)
         return self._acct
 
+    def _order_account(self) -> str:
+        """Счёт для заявок: из конфига (account), а если пусто — авто-обнаруженный
+        торговый счёт FORTS из QUIK. Так не нужно вписывать его вручную."""
+        acc = str(self.cfg.get("account", "")).strip()
+        if acc:
+            return acc
+        trdacc = self._acct_ids()[1]
+        return trdacc or ""
+
     def _net_position(self, sec: str) -> int | None:
         """Фактическая чистая позиция из QUIK (>0 лонг, <0 шорт, 0 плоско, None — не прочитать)."""
         firm, trdacc = self._acct_ids()
@@ -1012,7 +1021,7 @@ class OrbOrchestrator:
         log.error("ПУЛЬС СТОПА: позиция %s %d БЕЗ биржевого стопа! Переставляю стоп на %.2f.",
                   side, qty, stop_price)
         self._emit("error", {"text": f"стоп пропал у позиции {side} — переставляю на {stop_price:.2f}"})
-        r = orb_broker_quik.send_stop_order(self.qp, self.cfg["account"], self.cfg["class_code"], sec,
+        r = orb_broker_quik.send_stop_order(self.qp, self._order_account(), self.cfg["class_code"], sec,
                                             closing_side, qty, stop_price, self.cfg.get("client_code", ""))
         if getattr(r, "ok", False):
             self.stop_ref_active = True
@@ -1029,7 +1038,7 @@ class OrbOrchestrator:
         позиции, приводим qty к фактическому, гарантируем, что стоп встал (иначе
         аварийно закрываемся — голую позицию не держим)."""
         cfg = self.cfg
-        r = orb_broker_quik.send_market_order(self.qp, cfg["account"], cfg["class_code"], sec, side, qty,
+        r = orb_broker_quik.send_market_order(self.qp, self._order_account(), cfg["class_code"], sec, side, qty,
                                                cfg.get("client_code", ""))
         log.info("заявка вход отправлена: %s", r)
 
@@ -1057,13 +1066,13 @@ class OrbOrchestrator:
                 qty = real_qty
 
         closing_side = "short" if side == "long" else "long"
-        r2 = orb_broker_quik.send_stop_order(self.qp, cfg["account"], cfg["class_code"], sec, closing_side,
+        r2 = orb_broker_quik.send_stop_order(self.qp, self._order_account(), cfg["class_code"], sec, closing_side,
                                               qty, stop_price, cfg.get("client_code", ""))
         log.info("стоп-заявка отправлена: %s", r2)
         self.stop_ref_active = True
         if self.verify_exec and not r2.ok:
             log.error("СТОП-ЗАЯВКА не принята (%s) — повтор.", r2)
-            r2 = orb_broker_quik.send_stop_order(self.qp, cfg["account"], cfg["class_code"], sec, closing_side,
+            r2 = orb_broker_quik.send_stop_order(self.qp, self._order_account(), cfg["class_code"], sec, closing_side,
                                                   qty, stop_price, cfg.get("client_code", ""))
             log.info("стоп-заявка (повтор) отправлена: %s", r2)
             if not r2.ok:
@@ -1110,7 +1119,7 @@ class OrbOrchestrator:
         for attempt in range(1, self.close_retries + 1):
             real_side = "long" if net > 0 else "short"
             real_qty = abs(net)
-            orb_broker_quik.send_flat_market_order(self.qp, cfg["account"], cfg["class_code"], sec,
+            orb_broker_quik.send_flat_market_order(self.qp, self._order_account(), cfg["class_code"], sec,
                                                     position_side=real_side, qty=real_qty,
                                                     client_code=cfg.get("client_code", ""))
             ok, actual = self._confirm_net(sec, 0)
@@ -1130,7 +1139,7 @@ class OrbOrchestrator:
         или когда позицию не удалось прочитать."""
         if qty <= 0:
             return
-        r = orb_broker_quik.send_flat_market_order(self.qp, self.cfg["account"], self.cfg["class_code"], sec,
+        r = orb_broker_quik.send_flat_market_order(self.qp, self._order_account(), self.cfg["class_code"], sec,
                                                     qty=qty, position_side=position_side,
                                                     client_code=self.cfg.get("client_code", ""))
         log.info("закрытие позиции (%s) отправлено [без сверки]: %s", reason, r)
@@ -1248,8 +1257,13 @@ def preflight_checks(cfg: dict, qp, expected: str, tag: str, live: bool) -> tupl
     add("Фьючерсный счёт", "ok" if (firm and trdacc) else ("fail" if live else "warn"),
         f"{firm}/{trdacc}" if (firm and trdacc) else "не найден в qp.accounts")
 
-    acc = str(cfg.get("account", "")).strip()           # ACCOUNT для заявок
-    add("ACCOUNT в конфиге", "fail" if (live and not acc) else "ok", acc or "(не задан)")
+    acc = str(cfg.get("account", "")).strip()           # ACCOUNT для заявок (или авто из QUIK)
+    if acc:
+        add("Счёт для заявок", "ok", f"{acc} (из конфига)")
+    elif trdacc:
+        add("Счёт для заявок", "ok", f"{trdacc} (авто из QUIK)")
+    else:
+        add("Счёт для заявок", "fail" if live else "warn", "не задан и не найден")
 
     add("Активный контракт", "ok" if expected else "fail", expected or "не определён календарём")
 
