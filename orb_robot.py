@@ -23,7 +23,7 @@ import sys
 import time as _time
 from collections import deque
 from dataclasses import replace as _replace
-from datetime import date, datetime, time as _dtime, timedelta
+from datetime import date, datetime, time as _dtime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -741,7 +741,7 @@ class OrbOrchestrator:
 
         # свежесть проверяем только в окне торгов (10:00-18:45): вне сессии свежих
         # баров и не ждём, иначе вечером/на выходных ложная тревога
-        now_dt = now or datetime.now()
+        now_dt = now or _now_msk()
         age_min = (now_dt - bar.dt).total_seconds() / 60.0
         in_session = _dtime(10, 0) <= now_dt.time() <= _dtime(18, 45)
         if in_session and age_min > self.chart_max_age_min:
@@ -1136,6 +1136,14 @@ class OrbOrchestrator:
         log.info("закрытие позиции (%s) отправлено [без сверки]: %s", reason, r)
 
 
+def _now_msk() -> datetime:
+    """Текущее МОСКОВСКОЕ время (MSK = UTC+3, без перехода на летнее с 2014) наивным
+    datetime. Робот работает по MSK НЕЗАВИСИМО от часового пояса ПК — иначе локальное
+    время смешивается с MSK-таймстампами баров из QUIK (ложный «застой данных», EOD-
+    закрытие не в то время и т.п. при ПК не в MSK)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=3)
+
+
 def _next_wake(now: datetime, tf: int, delay: float) -> datetime:
     minute = (now.minute // tf) * tf
     boundary = now.replace(minute=minute, second=0, microsecond=0) + timedelta(minutes=tf)
@@ -1262,10 +1270,10 @@ def preflight_checks(cfg: dict, qp, expected: str, tag: str, live: bool) -> tupl
     ks = orb_risk.kill_switch_active(HERE / cfg.get("kill_switch_dir", "."))
     add("Kill-switch", "fail" if ks else "ok", "АКТИВЕН (файл STOP)" if ks else "не активен")
 
-    off = datetime.now().astimezone().utcoffset()       # робот работает по локальному времени = MSK
+    off = datetime.now().astimezone().utcoffset()       # робот внутри работает по MSK (UTC+3)
     off_h = off.total_seconds() / 3600 if off is not None else None
-    add("Часовой пояс", "ok" if off_h == 3 else "warn",
-        "UTC+3 (MSK)" if off_h == 3 else f"UTC{off_h:+.0f} — робот считает локальное время MSK, проверь часы")
+    add("Часовой пояс", "ok",
+        "часы ПК UTC+3 (MSK)" if off_h == 3 else f"часы ПК UTC{off_h:+.0f}; робот торгует по MSK внутренне")
 
     ok = all(level != "fail" for _, level, _ in res)
     return res, ok
@@ -1295,7 +1303,7 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
     tag = cfg["chart_tag"]
     tf = int(cfg.get("timeframe_minutes", 15))
     delay = float(cfg.get("bar_close_delay_seconds", 7))
-    today = date.today()
+    today = _now_msk().date()             # дата по MSK (контракт/разметка), не по часам ПК
     expected = orb_calendar.active_contract(today)
     log.info("Ожидаемый активный контракт на сегодня: %s — сверь, что график с тегом '%s' привязан к нему.",
              expected, tag)
@@ -1379,42 +1387,42 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
     acct_firm, acct_trdacc = orb_account.find_futures_account(qp)
     _emit_account(qp, acct_firm, acct_trdacc, on_event)
     acct_every = float(cfg.get("account_poll_seconds", 10))
-    next_acct = datetime.now()
+    next_acct = _now_msk()
     stop_every = float(cfg.get("stop_check_seconds", 30))   # пульс живости биржевого стопа
-    next_stop = datetime.now()
+    next_stop = _now_msk()
     stale_minutes = float(cfg.get("stale_minutes", 25))     # watchdog застоя данных (завис график/модем)
     stale = False
 
     try:
         while not _stopped():
-            wake = _next_wake(datetime.now(), tf, delay)
+            wake = _next_wake(_now_msk(), tf, delay)        # всё по MSK — совпадает с барами из QUIK
             if on_event:
                 on_event("waiting", {"until": wake.strftime("%H:%M:%S")})
-            while datetime.now() < wake and not _stopped():
-                if datetime.now() >= next_acct:
+            while _now_msk() < wake and not _stopped():
+                if _now_msk() >= next_acct:
                     _emit_account(qp, acct_firm, acct_trdacc, on_event)
-                    next_acct = datetime.now() + timedelta(seconds=acct_every)
+                    next_acct = _now_msk() + timedelta(seconds=acct_every)
                 # аварийный flat по kill-switch — сразу (не ждём следующий бар): кнопка «Закрыть всё»
                 if orb_risk.kill_switch_active(orch.kill_dir):
                     if not orch.halted_by_kill_switch:
                         log.warning("KILL SWITCH: файл STOP найден — закрываю позицию и останавливаюсь.")
                         orch.halted_by_kill_switch = True
                     px = orch._last_price or (orch.open_meta["entry_price"] if orch.open_meta else 0.0)
-                    orch.flat_now("kill", px, datetime.now())
+                    orch.flat_now("kill", px, _now_msk())
                     break
-                if live and datetime.now() >= next_stop:   # позиция открыта ⇒ стоп обязан быть
-                    orch.check_stop_alive(orch._contract(datetime.now().date()))
-                    next_stop = datetime.now() + timedelta(seconds=stop_every)
-                _now = datetime.now()      # EOD-страховщик по часам (не по бару): не унести позицию в ночь
+                if live and _now_msk() >= next_stop:       # позиция открыта ⇒ стоп обязан быть
+                    orch.check_stop_alive(orch._contract(_now_msk().date()))
+                    next_stop = _now_msk() + timedelta(seconds=stop_every)
+                _now = _now_msk()          # EOD-страховщик по часам MSK (не по бару): не унести позицию в ночь
                 if _now.time() >= orch.eod_flat_time:
                     orch.eod_time_flat(_now)
                     for s in shadows:
                         s.eod_time_flat(_now)
-                _time.sleep(min(1.0, (wake - datetime.now()).total_seconds()))
+                _time.sleep(min(1.0, (wake - _now_msk()).total_seconds()))
             if _stopped() or orch.halted_by_kill_switch:
                 break
             if on_event:
-                on_event("wake", {"time": datetime.now().strftime("%H:%M:%S")})
+                on_event("wake", {"time": _now_msk().strftime("%H:%M:%S")})
             candles = _load_recent(qp, tag, want=max(80, 5))
             if len(candles) < 2:            # нет баров: различаем «связь умерла» и «график пропал»
                 conn = _probe_connection(qp)
@@ -1439,7 +1447,7 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
                     on_event("chart_ok", {"text": "данные восстановлены"})
             # watchdog застоя (модем/зависший график): свечи есть, но не обновляются
             newest = _bar_dt(candles[-1]) or _bar_dt(candles[-2])
-            now_t = datetime.now()
+            now_t = _now_msk()             # MSK, чтобы совпадать с таймстампами баров QUIK
             in_session = _dtime(10, 0) <= now_t.time() <= _dtime(18, 45)
             age_min = (now_t - newest).total_seconds() / 60 if newest else 1e9
             if in_session and age_min > stale_minutes:
