@@ -68,10 +68,19 @@ def save_config(cfg: dict, path: str | Path | None = None) -> None:
     tmp.replace(path)
 
 
+def msk_log_formatter(fmt_str: str) -> logging.Formatter:
+    """Форматтер логов с таймстампом по МСК (UTC+3), чтобы время в логе совпадало с
+    временем баров из QUIK и внутренними часами робота — иначе на ПК не в MSK лог
+    читается со сдвигом (легко принять живой вход за «старый»)."""
+    fmt = logging.Formatter(fmt_str)
+    fmt.converter = lambda secs: _time.gmtime((secs or _time.time()) + 3 * 3600)
+    return fmt
+
+
 def setup_logging(cfg: dict) -> None:
     log_dir = HERE / cfg["paths"].get("log_dir", "logs")
     log_dir.mkdir(parents=True, exist_ok=True)
-    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    fmt = msk_log_formatter("%(asctime)s MSK %(levelname)s %(message)s")
     log.setLevel(logging.INFO)
     log.handlers.clear()
     for h in (logging.StreamHandler(), logging.FileHandler(log_dir / "orb_robot.log", encoding="utf-8")):
@@ -1423,6 +1432,14 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
             log.info("Метки на графике: включены; исторические метки НЕ удаляю, живые рисую поверх.")
     log.info("Старт ORB. режим=%s live_trading=%s tf=%d мин", "live" if live else "paper",
              cfg.get("live_trading"), tf)
+    _st = orch.state                           # сводка состояния на старте (прозрачность при mid-day старте)
+    _rng = (f"{_st.range_low:.0f}–{_st.range_high:.0f}"
+            if _st.range_ready and _st.range_high is not None else "ещё не готов")
+    log.info("Состояние на старте (%s МСК): диапазон 10:00–11:00 %s; лонг: %s, шорт: %s; позиция: %s.",
+             _now_msk().strftime("%H:%M"), _rng,
+             "использован" if _st.long_used else "свободен",
+             "использован" if _st.short_used else "свободен",
+             _st.position.side if _st.position is not None else "нет")
     if on_event:
         on_event("start", {"mode": "live" if live else "paper", "live_trading": cfg.get("live_trading"),
                            "contract": expected, "tag": tag, "tf": tf})

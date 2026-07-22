@@ -119,7 +119,7 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._log_handler = _QueueLogHandler(self.q)
-        self._log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        self._log_handler.setFormatter(R.msk_log_formatter("%(asctime)s MSK %(levelname)s %(message)s"))
         R.log.addHandler(self._log_handler)
         R.log.setLevel(logging.INFO)
         # тот же обработчик — на логгер самого окна (бэктест по графику QUIK, ошибки
@@ -979,7 +979,7 @@ def _setup_bootstrap_logging() -> None:
     рядом со скриптом плюс дублируем в консоль, чтобы было видно, где застряло."""
     log_dir = HERE / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    fmt = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    fmt = R.msk_log_formatter("%(asctime)s MSK %(levelname)s [%(name)s] %(message)s")
     log.setLevel(logging.DEBUG)
     log.handlers.clear()
     for h in (logging.StreamHandler(),
