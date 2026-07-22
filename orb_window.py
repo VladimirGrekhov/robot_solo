@@ -286,6 +286,7 @@ class App(tk.Tk):
         ("account", "ACCOUNT (пусто — авто из QUIK)", str),
         ("client_code", "CLIENT_CODE (если нужен брокеру)", str),
         ("draw_live_labels", "Рисовать сделки робота на графике QUIK", bool),
+        ("clear_labels_on_start", "Очищать метки графика при старте (иначе история остаётся)", bool),
     ]
 
     def _build_settings(self, parent):

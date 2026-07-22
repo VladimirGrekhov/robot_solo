@@ -1414,9 +1414,13 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
                     orch.state.position.side)
 
     last_dt = _bar_dt(todays[-1]) if todays else None
-    if orch.draw_labels:                       # чистим график один раз на старте — метки копятся за прогон
-        cleared = _clear_labels(qp, tag)
-        log.info("Метки на графике: рисование live/paper сделок включено (очистка на старте: %s).", cleared)
+    if orch.draw_labels:
+        # по умолчанию НЕ чистим — исторические метки (бэктест/прошлые прогоны) остаются,
+        # живые сделки ложатся сверху. clear_labels_on_start=true — очистить график на старте.
+        if cfg.get("clear_labels_on_start", False):
+            log.info("Метки на графике: включены, график очищен на старте (%s).", _clear_labels(qp, tag))
+        else:
+            log.info("Метки на графике: включены; исторические метки НЕ удаляю, живые рисую поверх.")
     log.info("Старт ORB. режим=%s live_trading=%s tf=%d мин", "live" if live else "paper",
              cfg.get("live_trading"), tf)
     if on_event:
