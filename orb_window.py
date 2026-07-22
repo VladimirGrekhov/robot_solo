@@ -283,8 +283,9 @@ class App(tk.Tk):
     TOP_FIELDS = [
         ("deposit_rub", "Депозит, ₽ (для сайзинга позиции)", float),
         ("chart_tag", "Тег M15-графика в QUIK", str),
-        ("account", "ACCOUNT (для реальных заявок)", str),
+        ("account", "ACCOUNT (пусто — авто из QUIK)", str),
         ("client_code", "CLIENT_CODE (если нужен брокеру)", str),
+        ("draw_live_labels", "Рисовать сделки робота на графике QUIK", bool),
     ]
 
     def _build_settings(self, parent):

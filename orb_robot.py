@@ -573,6 +573,9 @@ class OrbOrchestrator:
         self.chart_tag = cfg.get("chart_tag", "")
         self.chart_block = False               # входы заблокированы из-за неверного графика
         self.chart_block_reason = ""
+        # рисовать сделки робота на графике QUIK в реальном времени (только чемпион,
+        # не тени; best-effort — сбой отрисовки не влияет на торговлю)
+        self.draw_labels = bool(cfg.get("draw_live_labels", True)) and not name
         # сайзинг (пункт №4): защита от мусорных чтений ГО/rpp + опционально от живого equity
         sz = cfg.get("sizing", {})
         self.size_from_equity = bool(sz.get("from_live_equity", False))
@@ -822,6 +825,7 @@ class OrbOrchestrator:
                                          self.open_meta["qty"] if self.open_meta else 0, reason="kill")
                 if not replay:
                     self._emit("trade", self._trade_payload(trade))
+                    self._draw_marks([2], trade)          # метка выхода (PnL) на графике
                 self.open_meta = None
             self.state = _replace(self.state, position=None)
             return
@@ -865,6 +869,8 @@ class OrbOrchestrator:
                     if not replay:
                         self._emit("entry", {"side": entry.side, "bar": bar.dt.isoformat(sep=" "),
                                               "price": bar.open, "stop": entry.stop_price, "qty": qty})
+                        # метки входа/стопа/границ диапазона на графике (вход, SL, RH, RL)
+                        self._draw_marks([0, 1, 3, 4], self._partial_trade(bar, entry, qty))
                 else:
                     log.info("вход %s пропущен: нулевой размер позиции (риск/ГО-лимит)", entry.side)
                     if not replay:
@@ -899,6 +905,7 @@ class OrbOrchestrator:
                                      reason=trade.exit_reason)
             if not replay:
                 self._emit("trade", self._trade_payload(trade))
+                self._draw_marks([2], trade)              # метка выхода (PnL) на графике
             self.open_meta = None
 
         if result.entry is not None:
@@ -972,6 +979,7 @@ class OrbOrchestrator:
             self._close_position(self._contract(day), trade.dir,
                                  self.open_meta["qty"] if self.open_meta else 0, reason=reason)
         self._emit("trade", self._trade_payload(trade))
+        self._draw_marks([2], trade)                      # метка выхода (PnL) на графике
         self.open_meta = None
         self.state = _replace(self.state, position=None)
         return True
@@ -984,6 +992,31 @@ class OrbOrchestrator:
             return False
         px = price if price is not None else (self._last_price or self.open_meta["entry_price"])
         return self.flat_now("eod_time", px, now_dt)
+
+    def _draw_marks(self, idx: list, tr: orb_journal.TradeRecord) -> None:
+        """Best-effort рисование выбранных меток сделки на графике (live/paper чемпион).
+        idx — индексы в _trade_marks: 0 вход, 1 SL, 2 PnL-выход, 3 RH, 4 RL. Любой сбой
+        отрисовки логируется и игнорируется — на торговлю не влияет."""
+        if not self.draw_labels or not self.chart_tag:
+            return
+        if not callable(getattr(self.qp, "process_request", None)):
+            return
+        try:
+            marks = _trade_marks(tr)
+            for i in idx:
+                dt, price, text, rgb, align, _icon, hint = marks[i]
+                _add_label2(self.qp, self.chart_tag, price, dt, text, rgb, align, hint=hint)
+        except Exception as e:  # noqa: BLE001
+            log.warning("рисование меток на графике не удалось: %r", e)
+
+    def _partial_trade(self, bar: orb_strategy.Bar, entry: orb_strategy.EntrySignal,
+                       qty: int) -> orb_journal.TradeRecord:
+        """Запись сделки на момент ВХОДА (выход/PnL ещё неизвестны) — для отрисовки
+        меток входа/стопа/границ до закрытия."""
+        return orb_journal.TradeRecord(
+            datetime_in=bar.dt, datetime_out=bar.dt, dir=entry.side, qty=qty,
+            entry=bar.open, exit=bar.open, stop=entry.stop_price, pnl_pt=0.0, pnl_rub=0.0,
+            exit_reason="", range_width_pt=entry.range_high - entry.range_low, event_flags="")
 
     @staticmethod
     def _trade_payload(trade: orb_journal.TradeRecord) -> dict:
@@ -1381,6 +1414,9 @@ def run_paper_or_live(cfg: dict, live: bool, stop_event=None, on_event=None, con
                     orch.state.position.side)
 
     last_dt = _bar_dt(todays[-1]) if todays else None
+    if orch.draw_labels:                       # чистим график один раз на старте — метки копятся за прогон
+        cleared = _clear_labels(qp, tag)
+        log.info("Метки на графике: рисование live/paper сделок включено (очистка на старте: %s).", cleared)
     log.info("Старт ORB. режим=%s live_trading=%s tf=%d мин", "live" if live else "paper",
              cfg.get("live_trading"), tf)
     if on_event:
