@@ -73,3 +73,17 @@ def test_expiration_zone_mode_trading_days_vs_calendar_days():
     tuesday_before = datetime(2026, 3, 17, 12, 0)
     assert oc.entry_gate(tuesday_before, "trading_days")[0] is True
     assert oc.entry_gate(tuesday_before, "calendar_days")[0] is True
+
+
+def test_expiration_zone_mode_off_trades_through_expiration():
+    # off — зона экспирации не блокирует, даже в сам день экспирации 19.03.2026
+    exp_day = datetime(2026, 3, 19, 12, 0)
+    assert oc.entry_gate(exp_day, "trading_days") == (True, "blocked_expiration_adj")
+    for mode in ("off", "none", "always"):
+        assert oc.entry_gate(exp_day, mode) == (False, None)
+
+
+def test_expiration_zone_mode_off_keeps_cbr_block():
+    # off отключает ТОЛЬКО зону экспирации; жёсткий блок ЦБ остаётся
+    cbr_day = datetime(2026, 2, 13, 13, 15)  # день ЦБ из cbr_dates.csv
+    assert oc.entry_gate(cbr_day, "off") == (True, "blocked_cbr")

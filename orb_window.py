@@ -270,7 +270,7 @@ class App(tk.Tk):
     ]
     STRATEGY_FIELDS = [
         ("allow_position_flip", "Разрешить разворот позиции (как в эталонном Pine)", bool),
-        ("expiration_zone_mode", "Зона экспирации", ["trading_days", "calendar_days"]),
+        ("expiration_zone_mode", "Зона экспирации", ["trading_days", "calendar_days", "off"]),
         ("breakeven_r", "Безубыток после +N×R (0 — выкл.; live не двигает стоп)", float),
         ("eod_flat_time", "EOD-страховщик: закрыть рынком по времени, ЧЧ:ММ", str),
     ]

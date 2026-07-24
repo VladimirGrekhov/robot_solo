@@ -62,7 +62,9 @@ def entry_gate(dt: datetime, expiration_zone_mode: str = "trading_days") -> tupl
     if flags & EventFlag.CLEARING:
         return True, "blocked_clearing"
 
-    if expiration_zone_mode == "calendar_days":
+    if expiration_zone_mode in ("off", "none", "always"):
+        in_zone = False                       # зона экспирации отключена — торгуем сквозь неё
+    elif expiration_zone_mode == "calendar_days":
         in_zone = _is_in_calendar_day_zone(_msk_date(dt))
     else:
         in_zone = bool(flags & EventFlag.EXPIRATION_ADJ)
